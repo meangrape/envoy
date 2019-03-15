@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 set -e
 
@@ -21,5 +21,5 @@ df -h
 
 docker run -t -i -v "$ENVOY_BUILD_DIR":/build -v "$ENVOY_SRCDIR":/source \
   --env GCP_SERVICE_ACCOUNT_KEY --env BAZEL_REMOTE_CACHE \
-  envoyproxy/envoy-build:"$ENVOY_BUILD_SHA" /bin/bash -c "cd /source && ci/do_ci.sh $TEST_TYPE"
+  envoyproxy/envoy-build:"$ENVOY_BUILD_SHA" /usr/bin/env bash -c "cd /source && ci/do_ci.sh $TEST_TYPE"
 

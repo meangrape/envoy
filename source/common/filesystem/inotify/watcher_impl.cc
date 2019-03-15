@@ -1,4 +1,8 @@
+#if defined (__FreeBSD__)
+#include </usr/local/include/sys/inotify.h>
+#else
 #include <sys/inotify.h>
+#endif
 
 #include <cstdint>
 #include <string>

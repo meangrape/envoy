@@ -126,11 +126,11 @@ void UdpListenerImpl::handleReadCallback() {
       const struct sockaddr_in6* sin6 = reinterpret_cast<const struct sockaddr_in6*>(&addr);
       ASSERT(AF_INET6 == sin6->sin6_family);
       if (IN6_IS_ADDR_V4MAPPED(&sin6->sin6_addr)) {
-#if defined(__APPLE__)
+#if defined(__APPLE__) || (__FreeBSD__)
         struct sockaddr_in sin = {
-            {}, AF_INET, sin6->sin6_port, {sin6->sin6_addr.__u6_addr.__u6_addr32[3]}, {}};
+            {}, AF_INET, sin6->sin6_port, {sin6->sin6_addr.__u6_addr.__u6_addr8[3]}, {}};
 #else
-        struct sockaddr_in sin = {AF_INET, sin6->sin6_port, {sin6->sin6_addr.s6_addr32[3]}, {}};
+        struct sockaddr_in sin = {AF_INET, sin6->sin6_port, {sin6->sin6_addr.s6_addr8[3]}, {}};
 #endif
         peer_address = std::make_shared<Address::Ipv4Instance>(&sin);
       } else {

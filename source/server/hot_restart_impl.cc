@@ -1,7 +1,11 @@
 #include "server/hot_restart_impl.h"
 
 #include <signal.h>
+#if defined(OSX_ENABLED) || defined(__FreeBSD__)
+#include <sys/procctl.h>
+#else
 #include <sys/prctl.h>
+#endif
 #include <sys/types.h>
 #include <sys/un.h>
 
@@ -147,7 +151,12 @@ HotRestartImpl::HotRestartImpl(const Options& options)
 
   // If our parent ever goes away just terminate us so that we don't have to rely on ops/launching
   // logic killing the entire process tree. We should never exist without our parent.
+#if defined(__FreeBSD__)
+  int signum = 15;
+  int rc = procctl(P_PID, 0, PROC_PDEATHSIG_CTL, &signum);
+#else
   int rc = prctl(PR_SET_PDEATHSIG, SIGTERM);
+#endif
   RELEASE_ASSERT(rc != -1, "");
 }
 

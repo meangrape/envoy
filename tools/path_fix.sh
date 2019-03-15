@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # This script can be used to run bazel commands. It will attempt to translate paths in compiler
 # error messages to real system paths (vs. bazel symbolic links) which may be necessary for some
 # IDEs to properly associate error messages to files.
@@ -7,7 +7,7 @@
 #
 # NOTE: This implementation is far from perfect and will need to be refined to cover all cases.
 
-$* 2>&1 |
+"$*" 2>&1 |
   while IFS= read -r LINE
   do
     if [[ "${LINE}" =~ [[:space:]]*([^:[:space:]]+):[[:digit:]]+:[[:digit:]]+: ]]; then

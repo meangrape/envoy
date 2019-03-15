@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Create a test certificate with a 15-day expiration for SSL tests.
 

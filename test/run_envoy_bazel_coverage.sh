@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 set -e
 
@@ -57,7 +57,7 @@ COVERAGE_SUMMARY="${COVERAGE_DIR}/coverage_summary.txt"
 pushd "${GCOVR_DIR}"
 for f in $(find -L bazel-out/ -name "*.gcno")
 do
-  cp --parents "$f" bazel-out/k8-dbg/bin/"${COVERAGE_TARGET/:/\/}".runfiles/"${WORKSPACE}"
+  gcp --parents "$f" bazel-out/k8-dbg/bin/"${COVERAGE_TARGET/:/\/}".runfiles/"${WORKSPACE}"
 done
 popd
 

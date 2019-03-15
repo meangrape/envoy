@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Applies requisite code formatters to the source tree
 # check_spelling.sh
@@ -6,8 +6,7 @@
 # Why choose misspell?
 # https://github.com/client9/misspell#what-are-other-misspelling-correctors-and-whats-wrong-with-them
 
-set -u
-set -e
+set -eu
 
 VERSION="0.3.4"
 LINUX_MISSPELL_SHA="34d489dbc5ddb4dfd6d3cfac9fde8660e6c37e6c"

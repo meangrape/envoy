@@ -45,7 +45,11 @@
 #define be64toh(x) ntohll((x))
 
 #else
+#if defined (__FreeBSD__)
+#include <machine/endian.h>
+#else
 #include <endian.h>
+#endif
 #endif
 
 enum class ByteOrder { Host, LittleEndian, BigEndian };

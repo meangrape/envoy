@@ -4,7 +4,11 @@
 #include <malloc.h>
 
 #else
+#if defined (__FreeBSD__)
+#include <stdlib.h>
+#else
 #include <alloca.h>
+#endif
 #endif
 
 #include <stddef.h>

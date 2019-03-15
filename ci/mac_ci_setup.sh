@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/bash env
 
 # Installs the dependencies required for a macOS build via homebrew.
 # Tools are not upgraded to new versions.

@@ -15,7 +15,11 @@ int64_t getCurrentThreadId() {
   return static_cast<int64_t>(syscall(SYS_gettid));
 #elif defined(__APPLE__)
   uint64_t tid;
-  pthread_threadid_np(NULL, &tid);
+  tid = pthread_threadid_np(NULL, &tid);
+  return tid;
+#elif defined(__FreeBSD__)
+  uint64_t tid;
+  tid = pthread_getthreadid_np();
   return tid;
 #else
 #error "Enable and test pthread id retrieval code for you arch in pthread/thread_impl.cc"

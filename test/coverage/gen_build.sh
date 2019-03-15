@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env/ bash
 
 # Generate test/coverage/BUILD, which contains a single envoy_cc_test target
 # that contains all C++ based tests suitable for performing the coverage run. A

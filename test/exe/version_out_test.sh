@@ -1,6 +1,6 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-set -e -o pipefail
+set -eo pipefail
 
 ENVOY_BIN=${TEST_RUNDIR}/source/exe/envoy-static
 

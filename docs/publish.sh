@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # This is run on every commit that CircleCI picks up. It assumes that docs have already been built
 # via docs/build.sh. The push behavior differs depending on the nature of the commit:

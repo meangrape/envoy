@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Run a single Bazel test target under a privileged docker. Usage:
 #
@@ -34,7 +34,7 @@ function cleanup() {
 
 trap cleanup EXIT
 cat > "${DOCKER_ENV}" <<EOF
-  #!/bin/bash
+  #!/usr/bin/env bash
   export DOCKER_CERT_PATH="${DOCKER_CERT_PATH}"
   export DOCKER_HOST="${DOCKER_HOST}"
   export DOCKER_MACHINE_NAME="${DOCKER_MACHINE_NAME}"

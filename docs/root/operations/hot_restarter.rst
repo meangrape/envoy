@@ -17,7 +17,7 @@ The restarter is invoked like so:
 
 .. code-block:: jinja
 
-  #!/bin/bash
+  #!/usr/bin/env bash
 
   ulimit -n {{ pillar.get('envoy_max_open_files', '102400') }}
   exec /usr/sbin/envoy -c /etc/envoy/envoy.cfg --restart-epoch $RESTART_EPOCH --service-cluster {{ grains['cluster_name'] }} --service-node {{ grains['service_node'] }} --service-zone {{ grains.get('ec2_availability-zone', 'unknown') }}

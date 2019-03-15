@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 source "$TEST_RUNDIR/test/integration/test_utility.sh"
 
