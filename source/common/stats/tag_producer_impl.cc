@@ -3,6 +3,7 @@
 #include <string>
 
 #include "envoy/common/exception.h"
+#include "envoy/config/metrics/v3/stats.pb.h"
 
 #include "common/common/utility.h"
 #include "common/stats/tag_extractor_impl.h"
@@ -10,7 +11,7 @@
 namespace Envoy {
 namespace Stats {
 
-TagProducerImpl::TagProducerImpl(const envoy::config::metrics::v2::StatsConfig& config) {
+TagProducerImpl::TagProducerImpl(const envoy::config::metrics::v3::StatsConfig& config) {
   // To check name conflict.
   reserveResources(config);
   std::unordered_set<std::string> names = addDefaultExtractors(config);
@@ -23,8 +24,9 @@ TagProducerImpl::TagProducerImpl(const envoy::config::metrics::v2::StatsConfig& 
 
     // If no tag value is found, fallback to default regex to keep backward compatibility.
     if (tag_specifier.tag_value_case() ==
-            envoy::config::metrics::v2::TagSpecifier::TAG_VALUE_NOT_SET ||
-        tag_specifier.tag_value_case() == envoy::config::metrics::v2::TagSpecifier::kRegex) {
+            envoy::config::metrics::v3::TagSpecifier::TagValueCase::TAG_VALUE_NOT_SET ||
+        tag_specifier.tag_value_case() ==
+            envoy::config::metrics::v3::TagSpecifier::TagValueCase::kRegex) {
 
       if (tag_specifier.regex().empty()) {
         if (addExtractorsMatching(name) == 0) {
@@ -35,7 +37,7 @@ TagProducerImpl::TagProducerImpl(const envoy::config::metrics::v2::StatsConfig& 
         addExtractor(Stats::TagExtractorImpl::createTagExtractor(name, tag_specifier.regex()));
       }
     } else if (tag_specifier.tag_value_case() ==
-               envoy::config::metrics::v2::TagSpecifier::kFixedValue) {
+               envoy::config::metrics::v3::TagSpecifier::TagValueCase::kFixedValue) {
       default_tags_.emplace_back(Stats::Tag{name, tag_specifier.fixed_value()});
     }
   }
@@ -63,12 +65,12 @@ void TagProducerImpl::addExtractor(TagExtractorPtr extractor) {
 }
 
 void TagProducerImpl::forEachExtractorMatching(
-    const std::string& stat_name, std::function<void(const TagExtractorPtr&)> f) const {
+    absl::string_view stat_name, std::function<void(const TagExtractorPtr&)> f) const {
   IntervalSetImpl<size_t> remove_characters;
   for (const TagExtractorPtr& tag_extractor : tag_extractors_without_prefix_) {
     f(tag_extractor);
   }
-  const std::string::size_type dot = stat_name.find('.');
+  const absl::string_view::size_type dot = stat_name.find('.');
   if (dot != std::string::npos) {
     const absl::string_view token = absl::string_view(stat_name.data(), dot);
     const auto iter = tag_extractor_prefix_map_.find(token);
@@ -80,8 +82,8 @@ void TagProducerImpl::forEachExtractorMatching(
   }
 }
 
-std::string TagProducerImpl::produceTags(const std::string& metric_name,
-                                         std::vector<Tag>& tags) const {
+std::string TagProducerImpl::produceTags(absl::string_view metric_name, TagVector& tags) const {
+  // TODO(jmarantz): Skip the creation of string-based tags, creating a StatNameTagVector instead.
   tags.insert(tags.end(), default_tags_.begin(), default_tags_.end());
   IntervalSetImpl<size_t> remove_characters;
   forEachExtractorMatching(
@@ -91,12 +93,12 @@ std::string TagProducerImpl::produceTags(const std::string& metric_name,
   return StringUtil::removeCharacters(metric_name, remove_characters);
 }
 
-void TagProducerImpl::reserveResources(const envoy::config::metrics::v2::StatsConfig& config) {
+void TagProducerImpl::reserveResources(const envoy::config::metrics::v3::StatsConfig& config) {
   default_tags_.reserve(config.stats_tags().size());
 }
 
 std::unordered_set<std::string>
-TagProducerImpl::addDefaultExtractors(const envoy::config::metrics::v2::StatsConfig& config) {
+TagProducerImpl::addDefaultExtractors(const envoy::config::metrics::v3::StatsConfig& config) {
   std::unordered_set<std::string> names;
   if (!config.has_use_all_default_tags() || config.use_all_default_tags().value()) {
     for (const auto& desc : Config::TagNames::get().descriptorVec()) {

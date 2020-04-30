@@ -1,11 +1,12 @@
 #include "extensions/transport_sockets/alts/config.h"
 
-#include "envoy/config/transport_socket/alts/v2alpha/alts.pb.h"
-#include "envoy/config/transport_socket/alts/v2alpha/alts.pb.validate.h"
+#include "envoy/extensions/transport_sockets/alts/v3/alts.pb.h"
+#include "envoy/extensions/transport_sockets/alts/v3/alts.pb.validate.h"
 #include "envoy/registry/registry.h"
 #include "envoy/server/transport_socket_config.h"
 
 #include "common/common/assert.h"
+#include "common/grpc/google_grpc_context.h"
 #include "common/protobuf/protobuf.h"
 #include "common/protobuf/utility.h"
 
@@ -20,8 +21,8 @@ namespace TransportSockets {
 namespace Alts {
 
 // smart pointer for grpc_alts_credentials_options that will be automatically freed.
-typedef CSmartPtr<grpc_alts_credentials_options, grpc_alts_credentials_options_destroy>
-    GrpcAltsCredentialsOptionsPtr;
+using GrpcAltsCredentialsOptionsPtr =
+    CSmartPtr<grpc_alts_credentials_options, grpc_alts_credentials_options_destroy>;
 
 namespace {
 
@@ -45,7 +46,7 @@ bool doValidate(const tsi_peer& peer, const std::unordered_set<std::string>& pee
 }
 
 HandshakeValidator
-createHandshakeValidator(const envoy::config::transport_socket::alts::v2alpha::Alts& config) {
+createHandshakeValidator(const envoy::extensions::transport_sockets::alts::v3::Alts& config) {
   const auto& peer_service_accounts = config.peer_service_accounts();
   const std::unordered_set<std::string> peers(peer_service_accounts.cbegin(),
                                               peer_service_accounts.cend());
@@ -59,19 +60,46 @@ createHandshakeValidator(const envoy::config::transport_socket::alts::v2alpha::A
   return validator;
 }
 
-Network::TransportSocketFactoryPtr
-createTransportSocketFactoryHelper(const Protobuf::Message& message, bool is_upstream) {
+// Manage ALTS singleton state via SingletonManager
+class AltsSharedState : public Singleton::Instance {
+public:
+  AltsSharedState() { grpc_alts_shared_resource_dedicated_init(); }
+
+  ~AltsSharedState() override { grpc_alts_shared_resource_dedicated_shutdown(); }
+
+private:
+  // There is blanket google-grpc initialization in MainCommonBase, but that
+  // doesn't cover unit tests. However, putting blanket coverage in ProcessWide
+  // causes background threaded memory allocation in all unit tests making it
+  // hard to measure memory. Thus we also initialize grpc using our idempotent
+  // wrapper-class in classes that need it. See
+  // https://github.com/envoyproxy/envoy/issues/8282 for details.
+#ifdef ENVOY_GOOGLE_GRPC
+  Grpc::GoogleGrpcContext google_grpc_context_;
+#endif
+};
+
+SINGLETON_MANAGER_REGISTRATION(alts_shared_state);
+
+Network::TransportSocketFactoryPtr createTransportSocketFactoryHelper(
+    const Protobuf::Message& message, bool is_upstream,
+    Server::Configuration::TransportSocketFactoryContext& factory_ctxt) {
+  // A reference to this is held in the factory closure to keep the singleton
+  // instance alive.
+  auto alts_shared_state = factory_ctxt.singletonManager().getTyped<AltsSharedState>(
+      SINGLETON_MANAGER_REGISTERED_NAME(alts_shared_state),
+      [] { return std::make_shared<AltsSharedState>(); });
   auto config =
-      MessageUtil::downcastAndValidate<const envoy::config::transport_socket::alts::v2alpha::Alts&>(
-          message);
+      MessageUtil::downcastAndValidate<const envoy::extensions::transport_sockets::alts::v3::Alts&>(
+          message, factory_ctxt.messageValidationVisitor());
   HandshakeValidator validator = createHandshakeValidator(config);
 
-  const std::string handshaker_service = config.handshaker_service();
+  const std::string& handshaker_service = config.handshaker_service();
   HandshakerFactory factory =
-      [handshaker_service,
-       is_upstream](Event::Dispatcher& dispatcher,
-                    const Network::Address::InstanceConstSharedPtr& local_address,
-                    const Network::Address::InstanceConstSharedPtr&) -> TsiHandshakerPtr {
+      [handshaker_service, is_upstream,
+       alts_shared_state](Event::Dispatcher& dispatcher,
+                          const Network::Address::InstanceConstSharedPtr& local_address,
+                          const Network::Address::InstanceConstSharedPtr&) -> TsiHandshakerPtr {
     ASSERT(local_address != nullptr);
 
     GrpcAltsCredentialsOptionsPtr options;
@@ -84,8 +112,9 @@ createTransportSocketFactoryHelper(const Protobuf::Message& message, bool is_ups
     tsi_handshaker* handshaker = nullptr;
     // Specifying target name as empty since TSI won't take care of validating peer identity
     // in this use case. The validation will be performed by TsiSocket with the validator.
-    tsi_result status = alts_tsi_handshaker_create(
-        options.get(), target_name, handshaker_service.c_str(), is_upstream, &handshaker);
+    tsi_result status =
+        alts_tsi_handshaker_create(options.get(), target_name, handshaker_service.c_str(),
+                                   is_upstream, nullptr /* interested_parties */, &handshaker);
     CHandshakerPtr handshaker_ptr{handshaker};
 
     if (status != TSI_OK) {
@@ -103,20 +132,22 @@ createTransportSocketFactoryHelper(const Protobuf::Message& message, bool is_ups
 } // namespace
 
 ProtobufTypes::MessagePtr AltsTransportSocketConfigFactory::createEmptyConfigProto() {
-  return std::make_unique<envoy::config::transport_socket::alts::v2alpha::Alts>();
+  return std::make_unique<envoy::extensions::transport_sockets::alts::v3::Alts>();
 }
 
 Network::TransportSocketFactoryPtr
 UpstreamAltsTransportSocketConfigFactory::createTransportSocketFactory(
-    const Protobuf::Message& message, Server::Configuration::TransportSocketFactoryContext&) {
-  return createTransportSocketFactoryHelper(message, /* is_upstream */ true);
+    const Protobuf::Message& message,
+    Server::Configuration::TransportSocketFactoryContext& factory_ctxt) {
+  return createTransportSocketFactoryHelper(message, /* is_upstream */ true, factory_ctxt);
 }
 
 Network::TransportSocketFactoryPtr
 DownstreamAltsTransportSocketConfigFactory::createTransportSocketFactory(
-    const Protobuf::Message& message, Server::Configuration::TransportSocketFactoryContext&,
+    const Protobuf::Message& message,
+    Server::Configuration::TransportSocketFactoryContext& factory_ctxt,
     const std::vector<std::string>&) {
-  return createTransportSocketFactoryHelper(message, /* is_upstream */ false);
+  return createTransportSocketFactoryHelper(message, /* is_upstream */ false, factory_ctxt);
 }
 
 REGISTER_FACTORY(UpstreamAltsTransportSocketConfigFactory,

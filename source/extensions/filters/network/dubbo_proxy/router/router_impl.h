@@ -24,16 +24,13 @@ class Router : public Tcp::ConnectionPool::UpstreamCallbacks,
                Logger::Loggable<Logger::Id::dubbo> {
 public:
   Router(Upstream::ClusterManager& cluster_manager) : cluster_manager_(cluster_manager) {}
-  ~Router() {}
+  ~Router() override = default;
 
   // DubboFilters::DecoderFilter
   void onDestroy() override;
   void setDecoderFilterCallbacks(DubboFilters::DecoderFilterCallbacks& callbacks) override;
-  Network::FilterStatus transportBegin() override;
-  Network::FilterStatus transportEnd() override;
-  Network::FilterStatus messageBegin(MessageType type, int64_t message_id,
-                                     SerializationType serialization_type) override;
-  Network::FilterStatus messageEnd(MessageMetadataSharedPtr metadata) override;
+
+  FilterStatus onMessageDecoded(MessageMetadataSharedPtr metadata, ContextSharedPtr ctx) override;
 
   // Upstream::LoadBalancerContextBase
   const Envoy::Router::MetadataMatchCriteria* metadataMatchCriteria() override { return nullptr; }
@@ -50,14 +47,14 @@ private:
     UpstreamRequest(Router& parent, Tcp::ConnectionPool::Instance& pool,
                     MessageMetadataSharedPtr& metadata, SerializationType serialization_type,
                     ProtocolType protocol_type);
-    ~UpstreamRequest();
+    ~UpstreamRequest() override;
 
-    Network::FilterStatus start();
+    FilterStatus start();
     void resetStream();
     void encodeData(Buffer::Instance& data);
 
     // Tcp::ConnectionPool::Callbacks
-    void onPoolFailure(Tcp::ConnectionPool::PoolFailureReason reason,
+    void onPoolFailure(ConnectionPool::PoolFailureReason reason,
                        Upstream::HostDescriptionConstSharedPtr host) override;
     void onPoolReady(Tcp::ConnectionPool::ConnectionDataPtr&& conn,
                      Upstream::HostDescriptionConstSharedPtr host) override;
@@ -66,7 +63,7 @@ private:
     void onRequestComplete();
     void onResponseComplete();
     void onUpstreamHostSelected(Upstream::HostDescriptionConstSharedPtr host);
-    void onResetStream(Tcp::ConnectionPool::PoolFailureReason reason);
+    void onResetStream(ConnectionPool::PoolFailureReason reason);
 
     Router& parent_;
     Tcp::ConnectionPool::Instance& conn_pool_;
@@ -75,12 +72,13 @@ private:
     Tcp::ConnectionPool::Cancellable* conn_pool_handle_{};
     Tcp::ConnectionPool::ConnectionDataPtr conn_data_;
     Upstream::HostDescriptionConstSharedPtr upstream_host_;
-    DeserializerPtr deserializer_;
+    SerializerPtr serializer_;
     ProtocolPtr protocol_;
 
     bool request_complete_ : 1;
     bool response_started_ : 1;
     bool response_complete_ : 1;
+    bool stream_reset_ : 1;
   };
 
   void cleanup();

@@ -5,6 +5,7 @@
 #include "common/network/utility.h"
 
 #include "test/test_common/network_utility.h"
+#include "test/test_common/simulated_time_system.h"
 #include "test/test_common/test_time.h"
 #include "test/test_common/utility.h"
 
@@ -20,7 +21,7 @@ protected:
       : version_(GetParam()),
         alt_address_(Network::Test::findOrCheckFreePort(
             Network::Test::getCanonicalLoopbackAddress(version_), Address::SocketType::Stream)),
-        api_(Api::createApiForTest()), dispatcher_(api_->allocateDispatcher()) {}
+        api_(Api::createApiForTest()), dispatcher_(api_->allocateDispatcher("test_thread")) {}
 
   Event::DispatcherImpl& dispatcherImpl() {
     // We need access to the concrete impl type in order to instantiate a
@@ -34,8 +35,8 @@ protected:
 
   const Address::IpVersion version_;
   const Address::InstanceConstSharedPtr alt_address_;
+  Event::SimulatedTimeSystem time_system_;
   Api::ApiPtr api_;
-  DangerousDeprecatedTestTime test_time_;
   Event::DispatcherPtr dispatcher_;
 };
 

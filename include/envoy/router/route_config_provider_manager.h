@@ -2,9 +2,9 @@
 
 #include <string>
 
-#include "envoy/config/filter/network/http_connection_manager/v2/http_connection_manager.pb.h"
+#include "envoy/config/route/v3/route.pb.h"
 #include "envoy/event/dispatcher.h"
-#include "envoy/init/init.h"
+#include "envoy/extensions/filters/network/http_connection_manager/v3/http_connection_manager.pb.h"
 #include "envoy/json/json_object.h"
 #include "envoy/local_info/local_info.h"
 #include "envoy/router/rds.h"
@@ -23,7 +23,7 @@ namespace Router {
  */
 class RouteConfigProviderManager {
 public:
-  virtual ~RouteConfigProviderManager() {}
+  virtual ~RouteConfigProviderManager() = default;
 
   /**
    * Get a RouteConfigProviderPtr for a route from RDS. Ownership of the RouteConfigProvider is the
@@ -34,21 +34,25 @@ public:
    * @param rds supplies the proto configuration of an RDS-configured RouteConfigProvider.
    * @param factory_context is the context to use for the route config provider.
    * @param stat_prefix supplies the stat_prefix to use for the provider stats.
+   * @param init_manager the Init::Manager used to coordinate initialization of a the underlying RDS
+   * subscription.
    */
-  virtual RouteConfigProviderPtr createRdsRouteConfigProvider(
-      const envoy::config::filter::network::http_connection_manager::v2::Rds& rds,
-      Server::Configuration::FactoryContext& factory_context, const std::string& stat_prefix) PURE;
+  virtual RouteConfigProviderSharedPtr createRdsRouteConfigProvider(
+      const envoy::extensions::filters::network::http_connection_manager::v3::Rds& rds,
+      Server::Configuration::ServerFactoryContext& factory_context, const std::string& stat_prefix,
+      Init::Manager& init_manager) PURE;
 
   /**
    * Get a RouteConfigSharedPtr for a statically defined route. Ownership is as described for
    * getRdsRouteConfigProvider above. This method always create a new RouteConfigProvider.
    * @param route_config supplies the RouteConfiguration for this route
-   * @param runtime supplies the runtime loader.
-   * @param cm supplies the ClusterManager.
+   * @param factory_context is the context to use for the route config provider.
+   * @param validator is the message validator for route config.
    */
   virtual RouteConfigProviderPtr
-  createStaticRouteConfigProvider(const envoy::api::v2::RouteConfiguration& route_config,
-                                  Server::Configuration::FactoryContext& factory_context) PURE;
+  createStaticRouteConfigProvider(const envoy::config::route::v3::RouteConfiguration& route_config,
+                                  Server::Configuration::ServerFactoryContext& factory_context,
+                                  ProtobufMessage::ValidationVisitor& validator) PURE;
 };
 
 } // namespace Router

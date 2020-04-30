@@ -13,42 +13,48 @@ namespace NetworkFilters {
 class NetworkFilterNameValues {
 public:
   // Client ssl auth filter
-  const std::string ClientSslAuth = "envoy.client_ssl_auth";
+  const std::string ClientSslAuth = "envoy.filters.network.client_ssl_auth";
   // Echo filter
-  const std::string Echo = "envoy.echo";
+  const std::string Echo = "envoy.filters.network.echo";
+  // Direct response filter
+  const std::string DirectResponse = "envoy.filters.network.direct_response";
+  // RocketMQ proxy filter
+  const std::string RocketmqProxy = "envoy.filters.network.rocketmq_proxy";
   // Dubbo proxy filter
   const std::string DubboProxy = "envoy.filters.network.dubbo_proxy";
   // HTTP connection manager filter
-  const std::string HttpConnectionManager = "envoy.http_connection_manager";
+  const std::string HttpConnectionManager = "envoy.filters.network.http_connection_manager";
+  // Local rate limit filter
+  const std::string LocalRateLimit = "envoy.filters.network.local_ratelimit";
   // Mongo proxy filter
-  const std::string MongoProxy = "envoy.mongo_proxy";
+  const std::string MongoProxy = "envoy.filters.network.mongo_proxy";
   // MySQL proxy filter
   const std::string MySQLProxy = "envoy.filters.network.mysql_proxy";
+  // Postgres proxy filter
+  const std::string Postgres = "envoy.filters.network.postgres_proxy";
   // Rate limit filter
-  const std::string RateLimit = "envoy.ratelimit";
+  const std::string RateLimit = "envoy.filters.network.ratelimit";
   // Redis proxy filter
-  const std::string RedisProxy = "envoy.redis_proxy";
-  // IP tagging filter
-  const std::string TcpProxy = "envoy.tcp_proxy";
+  const std::string RedisProxy = "envoy.filters.network.redis_proxy";
+  // TCP proxy filter
+  const std::string TcpProxy = "envoy.filters.network.tcp_proxy";
   // Authorization filter
-  const std::string ExtAuthorization = "envoy.ext_authz";
+  const std::string ExtAuthorization = "envoy.filters.network.ext_authz";
+  // Kafka Broker filter
+  const std::string KafkaBroker = "envoy.filters.network.kafka_broker";
   // Thrift proxy filter
   const std::string ThriftProxy = "envoy.filters.network.thrift_proxy";
   // Role based access control filter
   const std::string Rbac = "envoy.filters.network.rbac";
   // SNI Cluster filter
   const std::string SniCluster = "envoy.filters.network.sni_cluster";
-
-  // Converts names from v1 to v2
-  const Config::V1Converter v1_converter_;
-
-  // NOTE: Do not add any new filters to this list. All future filters are v2 only.
-  NetworkFilterNameValues()
-      : v1_converter_({ClientSslAuth, Echo, HttpConnectionManager, MongoProxy, RateLimit,
-                       RedisProxy, TcpProxy, ExtAuthorization}) {}
+  // SNI Dynamic forward proxy filter
+  const std::string SniDynamicForwardProxy = "envoy.filters.network.sni_dynamic_forward_proxy";
+  // ZooKeeper proxy filter
+  const std::string ZooKeeperProxy = "envoy.filters.network.zookeeper_proxy";
 };
 
-typedef ConstSingleton<NetworkFilterNameValues> NetworkFilterNames;
+using NetworkFilterNames = ConstSingleton<NetworkFilterNameValues>;
 
 } // namespace NetworkFilters
 } // namespace Extensions

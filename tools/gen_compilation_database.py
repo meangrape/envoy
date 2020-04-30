@@ -1,18 +1,51 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import argparse
+import glob
 import json
 import os
+import shlex
 import subprocess
+from pathlib import Path
 
 
+def runBazelBuildForCompilationDatabase(bazel_options, bazel_targets):
+  query_targets = ' union '.join(bazel_targets)
+  query = ' union '.join(
+      q.format(query_targets) for q in [
+          'attr(include_prefix, ".+", kind(cc_library, deps({})))',
+          'attr(strip_include_prefix, ".+", kind(cc_library, deps({})))',
+          'attr(generator_function, ".*proto_library", kind(cc_.*, deps({})))',
+      ])
+  build_targets = subprocess.check_output(["bazel", "query", "--notool_deps",
+                                           query]).decode().splitlines()
+  subprocess.check_call(["bazel", "build"] + bazel_options + build_targets)
+
+
+# This method is equivalent to https://github.com/grailbio/bazel-compilation-database/blob/master/generate.sh
 def generateCompilationDatabase(args):
+  # We need to download all remote outputs for generated source code. This option lives here to override those
+  # specified in bazelrc.
+  bazel_options = shlex.split(os.environ.get("BAZEL_BUILD_OPTIONS", "")) + [
+      "--config=compdb",
+      "--remote_download_outputs=all",
+  ]
   if args.run_bazel_build:
-    subprocess.check_call(["bazel", "build"] + args.bazel_targets)
+    runBazelBuildForCompilationDatabase(bazel_options, args.bazel_targets)
 
-  gen_compilation_database_sh = os.path.join(
-      os.path.realpath(os.path.dirname(__file__)), "../bazel/gen_compilation_database.sh")
-  subprocess.check_call([gen_compilation_database_sh] + args.bazel_targets)
+  subprocess.check_call(["bazel", "build"] + bazel_options + [
+      "--aspects=@bazel_compdb//:aspects.bzl%compilation_database_aspect",
+      "--output_groups=compdb_files"
+  ] + args.bazel_targets)
+
+  execroot = subprocess.check_output(["bazel", "info", "execution_root"] +
+                                     bazel_options).decode().strip()
+
+  compdb = []
+  for compdb_file in Path(execroot).glob("**/*.compile_commands.json"):
+    compdb.extend(json.loads("[" + compdb_file.read_text().replace("__EXEC_ROOT__", execroot) +
+                             "]"))
+  return compdb
 
 
 def isHeader(filename):
@@ -39,7 +72,7 @@ def isCompileTarget(target, args):
 
 
 def modifyCompileCommand(target, args):
-  _, options = target["command"].split(" ", 1)
+  cc, options = target["command"].split(" ", 1)
 
   # Workaround for bazel added C++11 options, those doesn't affect build itself but
   # clang-tidy will misinterpret them.
@@ -55,18 +88,13 @@ def modifyCompileCommand(target, args):
     options += " -Wno-pragma-once-outside-header -Wno-unused-const-variable"
     options += " -Wno-unused-function"
 
-  target["command"] = " ".join(["clang++", options])
+  target["command"] = " ".join([cc, options])
   return target
 
 
-def fixCompilationDatabase(args):
-  with open("compile_commands.json", "r") as db_file:
-    db = json.load(db_file)
-
+def fixCompilationDatabase(args, db):
   db = [modifyCompileCommand(target, args) for target in db if isCompileTarget(target, args)]
 
-  # Remove to avoid writing into symlink
-  os.remove("compile_commands.json")
   with open("compile_commands.json", "w") as db_file:
     json.dump(db, db_file, indent=2)
 
@@ -78,8 +106,8 @@ if __name__ == "__main__":
   parser.add_argument('--include_genfiles', action='store_true')
   parser.add_argument('--include_headers', action='store_true')
   parser.add_argument('--vscode', action='store_true')
-  parser.add_argument(
-      'bazel_targets', nargs='*', default=["//source/...", "//test/...", "//tools/..."])
+  parser.add_argument('bazel_targets',
+                      nargs='*',
+                      default=["//source/...", "//test/...", "//tools/..."])
   args = parser.parse_args()
-  generateCompilationDatabase(args)
-  fixCompilationDatabase(args)
+  fixCompilationDatabase(args, generateCompilationDatabase(args))

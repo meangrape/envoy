@@ -1,26 +1,27 @@
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <unistd.h>
-
 #include <iostream>
 #include <memory>
 #include <string>
 
 #include "envoy/common/exception.h"
+#include "envoy/common/platform.h"
 
+#include "common/api/os_sys_calls_impl.h"
 #include "common/common/fmt.h"
 #include "common/common/utility.h"
 #include "common/network/address_impl.h"
 #include "common/network/utility.h"
 
+#include "test/mocks/api/mocks.h"
 #include "test/test_common/environment.h"
 #include "test/test_common/network_utility.h"
+#include "test/test_common/threadsafe_singleton_injector.h"
 #include "test/test_common/utility.h"
 
 #include "gtest/gtest.h"
+
+using testing::_;
+using testing::NiceMock;
+using testing::Return;
 
 namespace Envoy {
 namespace Network {
@@ -33,12 +34,6 @@ bool addressesEqual(const InstanceConstSharedPtr& a, const Instance& b) {
   } else {
     return a->ip()->addressAsString() == b.ip()->addressAsString();
   }
-}
-
-void makeFdBlocking(int fd) {
-  const int flags = ::fcntl(fd, F_GETFL, 0);
-  ASSERT_GE(flags, 0);
-  ASSERT_EQ(::fcntl(fd, F_SETFL, flags & (~O_NONBLOCK)), 0);
 }
 
 void testSocketBindAndConnect(Network::Address::IpVersion ip_version, bool v6only) {
@@ -55,14 +50,17 @@ void testSocketBindAndConnect(Network::Address::IpVersion ip_version, bool v6onl
   // Create a socket on which we'll listen for connections from clients.
   IoHandlePtr io_handle = addr_port->socket(SocketType::Stream);
   ASSERT_GE(io_handle->fd(), 0) << addr_port->asString();
+  auto& os_sys_calls = Api::OsSysCallsSingleton::get();
 
   // Check that IPv6 sockets accept IPv6 connections only.
   if (addr_port->ip()->version() == IpVersion::v6) {
     int socket_v6only = 0;
     socklen_t size_int = sizeof(socket_v6only);
-    ASSERT_GE(::getsockopt(io_handle->fd(), IPPROTO_IPV6, IPV6_V6ONLY, &socket_v6only, &size_int),
+    ASSERT_GE(os_sys_calls
+                  .getsockopt(io_handle->fd(), IPPROTO_IPV6, IPV6_V6ONLY, &socket_v6only, &size_int)
+                  .rc_,
               0);
-    EXPECT_EQ(v6only, socket_v6only);
+    EXPECT_EQ(v6only, socket_v6only != 0);
   }
 
   // Bind the socket to the desired address and port.
@@ -72,9 +70,9 @@ void testSocketBindAndConnect(Network::Address::IpVersion ip_version, bool v6onl
 
   // Do a bare listen syscall. Not bothering to accept connections as that would
   // require another thread.
-  ASSERT_EQ(::listen(io_handle->fd(), 128), 0);
+  ASSERT_EQ(os_sys_calls.listen(io_handle->fd(), 128).rc_, 0);
 
-  auto client_connect = [](Address::InstanceConstSharedPtr addr_port) {
+  auto client_connect = [&os_sys_calls](Address::InstanceConstSharedPtr addr_port) {
     // Create a client socket and connect to the server.
     IoHandlePtr client_handle = addr_port->socket(SocketType::Stream);
     ASSERT_GE(client_handle->fd(), 0) << addr_port->asString();
@@ -83,7 +81,7 @@ void testSocketBindAndConnect(Network::Address::IpVersion ip_version, bool v6onl
     // operation of ::connect(), so connect returns with errno==EWOULDBLOCK before the tcp
     // handshake can complete. For testing convenience, re-enable blocking on the socket
     // so that connect will wait for the handshake to complete.
-    makeFdBlocking(client_handle->fd());
+    ASSERT_EQ(os_sys_calls.setsocketblocking(client_handle->fd(), true).rc_, 0);
 
     // Connect to the server.
     const Api::SysCallIntResult result = addr_port->connect(client_handle->fd());
@@ -91,7 +89,12 @@ void testSocketBindAndConnect(Network::Address::IpVersion ip_version, bool v6onl
                              << "\nerrno: " << result.errno_;
   };
 
-  client_connect(addr_port);
+  auto client_addr_port = Network::Utility::parseInternetAddressAndPort(
+      fmt::format("{}:{}", Network::Test::getLoopbackAddressUrlString(ip_version),
+                  addr_port->ip()->port()),
+      v6only);
+  ASSERT_NE(client_addr_port, nullptr);
+  client_connect(client_addr_port);
 
   if (!v6only) {
     ASSERT_EQ(IpVersion::v6, addr_port->ip()->version());
@@ -144,6 +147,7 @@ TEST(Ipv4InstanceTest, SocketAddress) {
 
   Ipv4Instance address(&addr4);
   EXPECT_EQ("1.2.3.4:6502", address.asString());
+  EXPECT_EQ("1.2.3.4:6502", address.asStringView());
   EXPECT_EQ("1.2.3.4:6502", address.logicalName());
   EXPECT_EQ(Type::Ip, address.type());
   EXPECT_EQ("1.2.3.4", address.ip()->addressAsString());
@@ -157,6 +161,7 @@ TEST(Ipv4InstanceTest, SocketAddress) {
 TEST(Ipv4InstanceTest, AddressOnly) {
   Ipv4Instance address("3.4.5.6");
   EXPECT_EQ("3.4.5.6:0", address.asString());
+  EXPECT_EQ("3.4.5.6:0", address.asStringView());
   EXPECT_EQ(Type::Ip, address.type());
   EXPECT_EQ("3.4.5.6", address.ip()->addressAsString());
   EXPECT_EQ(0U, address.ip()->port());
@@ -168,6 +173,7 @@ TEST(Ipv4InstanceTest, AddressOnly) {
 TEST(Ipv4InstanceTest, AddressAndPort) {
   Ipv4Instance address("127.0.0.1", 80);
   EXPECT_EQ("127.0.0.1:80", address.asString());
+  EXPECT_EQ("127.0.0.1:80", address.asStringView());
   EXPECT_EQ(Type::Ip, address.type());
   EXPECT_EQ("127.0.0.1", address.ip()->addressAsString());
   EXPECT_FALSE(address.ip()->isAnyAddress());
@@ -180,6 +186,7 @@ TEST(Ipv4InstanceTest, AddressAndPort) {
 TEST(Ipv4InstanceTest, PortOnly) {
   Ipv4Instance address(443);
   EXPECT_EQ("0.0.0.0:443", address.asString());
+  EXPECT_EQ("0.0.0.0:443", address.asStringView());
   EXPECT_EQ(Type::Ip, address.type());
   EXPECT_EQ("0.0.0.0", address.ip()->addressAsString());
   EXPECT_TRUE(address.ip()->isAnyAddress());
@@ -192,6 +199,7 @@ TEST(Ipv4InstanceTest, PortOnly) {
 TEST(Ipv4InstanceTest, Multicast) {
   Ipv4Instance address("230.0.0.1");
   EXPECT_EQ("230.0.0.1:0", address.asString());
+  EXPECT_EQ("230.0.0.1:0", address.asStringView());
   EXPECT_EQ(Type::Ip, address.type());
   EXPECT_EQ("230.0.0.1", address.ip()->addressAsString());
   EXPECT_FALSE(address.ip()->isAnyAddress());
@@ -204,6 +212,7 @@ TEST(Ipv4InstanceTest, Multicast) {
 TEST(Ipv4InstanceTest, Broadcast) {
   Ipv4Instance address("255.255.255.255");
   EXPECT_EQ("255.255.255.255:0", address.asString());
+  EXPECT_EQ("255.255.255.255:0", address.asStringView());
   EXPECT_EQ(Type::Ip, address.type());
   EXPECT_EQ("255.255.255.255", address.ip()->addressAsString());
   EXPECT_EQ(0U, address.ip()->port());
@@ -225,6 +234,7 @@ TEST(Ipv6InstanceTest, SocketAddress) {
 
   Ipv6Instance address(addr6);
   EXPECT_EQ("[1:23::ef]:32000", address.asString());
+  EXPECT_EQ("[1:23::ef]:32000", address.asStringView());
   EXPECT_EQ(Type::Ip, address.type());
   EXPECT_EQ("1:23::ef", address.ip()->addressAsString());
   EXPECT_FALSE(address.ip()->isAnyAddress());
@@ -238,6 +248,7 @@ TEST(Ipv6InstanceTest, SocketAddress) {
 TEST(Ipv6InstanceTest, AddressOnly) {
   Ipv6Instance address("2001:0db8:85a3:0000:0000:8a2e:0370:7334");
   EXPECT_EQ("[2001:db8:85a3::8a2e:370:7334]:0", address.asString());
+  EXPECT_EQ("[2001:db8:85a3::8a2e:370:7334]:0", address.asStringView());
   EXPECT_EQ(Type::Ip, address.type());
   EXPECT_EQ("2001:db8:85a3::8a2e:370:7334", address.ip()->addressAsString());
   EXPECT_EQ(0U, address.ip()->port());
@@ -250,6 +261,7 @@ TEST(Ipv6InstanceTest, AddressOnly) {
 TEST(Ipv6InstanceTest, AddressAndPort) {
   Ipv6Instance address("::0001", 80);
   EXPECT_EQ("[::1]:80", address.asString());
+  EXPECT_EQ("[::1]:80", address.asStringView());
   EXPECT_EQ(Type::Ip, address.type());
   EXPECT_EQ("::1", address.ip()->addressAsString());
   EXPECT_EQ(80U, address.ip()->port());
@@ -261,6 +273,7 @@ TEST(Ipv6InstanceTest, AddressAndPort) {
 TEST(Ipv6InstanceTest, PortOnly) {
   Ipv6Instance address(443);
   EXPECT_EQ("[::]:443", address.asString());
+  EXPECT_EQ("[::]:443", address.asStringView());
   EXPECT_EQ(Type::Ip, address.type());
   EXPECT_EQ("::", address.ip()->addressAsString());
   EXPECT_TRUE(address.ip()->isAnyAddress());
@@ -273,6 +286,7 @@ TEST(Ipv6InstanceTest, PortOnly) {
 TEST(Ipv6InstanceTest, Multicast) {
   Ipv6Instance address("FF00::");
   EXPECT_EQ("[ff00::]:0", address.asString());
+  EXPECT_EQ("[ff00::]:0", address.asStringView());
   EXPECT_EQ(Type::Ip, address.type());
   EXPECT_EQ("ff00::", address.ip()->addressAsString());
   EXPECT_FALSE(address.ip()->isAnyAddress());
@@ -307,10 +321,68 @@ TEST(PipeInstanceTest, Basic) {
   EXPECT_EQ(nullptr, address.ip());
 }
 
+TEST(PipeInstanceTest, BasicPermission) {
+  std::string path = TestEnvironment::unixDomainSocketPath("foo.sock");
+
+  const mode_t mode = 0777;
+  PipeInstance address(path, mode);
+
+  IoHandlePtr io_handle = address.socket(SocketType::Stream);
+  ASSERT_GE(io_handle->fd(), 0) << address.asString();
+
+  Api::SysCallIntResult result = address.bind(io_handle->fd());
+  ASSERT_EQ(result.rc_, 0) << address.asString() << "\nerror: " << strerror(result.errno_)
+                           << "\terrno: " << result.errno_;
+
+  Api::OsSysCalls& os_sys_calls = Api::OsSysCallsSingleton::get();
+  struct stat stat_buf;
+  result = os_sys_calls.stat(path.c_str(), &stat_buf);
+  EXPECT_EQ(result.rc_, 0);
+  // Get file permissions bits
+  ASSERT_EQ(stat_buf.st_mode & 07777, mode)
+      << path << std::oct << "\t" << (stat_buf.st_mode & 07777) << std::dec << "\t"
+      << (stat_buf.st_mode) << strerror(result.errno_);
+}
+
+TEST(PipeInstanceTest, PermissionFail) {
+  NiceMock<Api::MockOsSysCalls> os_sys_calls;
+  TestThreadsafeSingletonInjector<Api::OsSysCallsImpl> os_calls(&os_sys_calls);
+  std::string path = TestEnvironment::unixDomainSocketPath("foo.sock");
+
+  const mode_t mode = 0777;
+  PipeInstance address(path, mode);
+
+  IoHandlePtr io_handle = address.socket(SocketType::Stream);
+  ASSERT_GE(io_handle->fd(), 0) << address.asString();
+  EXPECT_CALL(os_sys_calls, bind(_, _, _)).WillOnce(Return(Api::SysCallIntResult{0, 0}));
+  EXPECT_CALL(os_sys_calls, chmod(_, _)).WillOnce(Return(Api::SysCallIntResult{-1, 0}));
+  EXPECT_THROW_WITH_REGEX(address.bind(io_handle->fd()), EnvoyException,
+                          "Failed to create socket with mode");
+}
+
+TEST(PipeInstanceTest, AbstractNamespacePermission) {
+#if defined(__linux__)
+  std::string path = "@/foo";
+  const mode_t mode = 0777;
+  EXPECT_THROW_WITH_REGEX(PipeInstance address(path, mode), EnvoyException,
+                          "Cannot set mode for Abstract AF_UNIX sockets");
+
+  sockaddr_un sun;
+  sun.sun_family = AF_UNIX;
+  StringUtil::strlcpy(&sun.sun_path[1], path.data(), path.size());
+  sun.sun_path[0] = '\0';
+  socklen_t ss_len = offsetof(struct sockaddr_un, sun_path) + 1 + strlen(sun.sun_path);
+
+  EXPECT_THROW_WITH_REGEX(PipeInstance address(&sun, ss_len, mode), EnvoyException,
+                          "Cannot set mode for Abstract AF_UNIX sockets");
+#endif
+}
+
 TEST(PipeInstanceTest, AbstractNamespace) {
 #if defined(__linux__)
   PipeInstance address("@/foo");
   EXPECT_EQ("@/foo", address.asString());
+  EXPECT_EQ("@/foo", address.asStringView());
   EXPECT_EQ(Type::Pipe, address.type());
   EXPECT_EQ(nullptr, address.ip());
 #else
@@ -322,6 +394,29 @@ TEST(PipeInstanceTest, BadAddress) {
   std::string long_address(1000, 'X');
   EXPECT_THROW_WITH_REGEX(PipeInstance address(long_address), EnvoyException,
                           "exceeds maximum UNIX domain socket path size");
+}
+
+// Validate that embedded nulls in abstract socket addresses are included and represented with '@'.
+TEST(PipeInstanceTest, EmbeddedNullAbstractNamespace) {
+  std::string embedded_null("@/foo/bar");
+  embedded_null[5] = '\0'; // Set embedded null.
+#if defined(__linux__)
+  PipeInstance address(embedded_null);
+  EXPECT_EQ("@/foo@bar", address.asString());
+  EXPECT_EQ("@/foo@bar", address.asStringView());
+  EXPECT_EQ(Type::Pipe, address.type());
+  EXPECT_EQ(nullptr, address.ip());
+#else
+  EXPECT_THROW(PipeInstance address(embedded_null), EnvoyException);
+#endif
+}
+
+// Reject embedded nulls in filesystem pathname addresses.
+TEST(PipeInstanceTest, EmbeddedNullPathError) {
+  std::string embedded_null("/foo/bar");
+  embedded_null[4] = '\0'; // Set embedded null.
+  EXPECT_THROW_WITH_REGEX(PipeInstance address(embedded_null), EnvoyException,
+                          "contains embedded null characters");
 }
 
 TEST(PipeInstanceTest, UnlinksExistingFile) {
@@ -415,7 +510,7 @@ struct TestCase {
   TestCase() = default;
   TestCase(enum InstanceType type, const std::string& address, uint32_t port)
       : address_(address), type_(type), port_(port) {}
-  TestCase(const TestCase& rhs) : address_(rhs.address_), type_(rhs.type_), port_(rhs.port_) {}
+  TestCase(const TestCase& rhs) = default;
 
   bool operator==(const TestCase& rhs) {
     return (type_ == rhs.type_ && address_ == rhs.address_ && port_ == rhs.port_);
@@ -431,7 +526,7 @@ public:
 protected:
   InstanceConstSharedPtr testCaseToInstance(const struct TestCase& test_case) {
     // Catch default construction.
-    if (test_case.address_ == "") {
+    if (test_case.address_.empty()) {
       return nullptr;
     }
     switch (test_case.type_) {
@@ -451,7 +546,7 @@ protected:
 
 TEST_P(MixedAddressTest, Equality) {
   TestCase lhs_case = ::testing::get<0>(GetParam());
-  TestCase rhs_case = ::testing::get<1>(GetParam());
+  const TestCase& rhs_case = ::testing::get<1>(GetParam());
   InstanceConstSharedPtr lhs = testCaseToInstance(lhs_case);
   InstanceConstSharedPtr rhs = testCaseToInstance(rhs_case);
   if (lhs_case == rhs_case) {
@@ -470,7 +565,6 @@ struct TestCase test_cases[] = {
 INSTANTIATE_TEST_SUITE_P(AddressCrossProduct, MixedAddressTest,
                          ::testing::Combine(::testing::ValuesIn(test_cases),
                                             ::testing::ValuesIn(test_cases)));
-
 } // namespace Address
 } // namespace Network
 } // namespace Envoy

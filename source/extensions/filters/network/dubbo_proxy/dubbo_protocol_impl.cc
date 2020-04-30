@@ -4,6 +4,9 @@
 
 #include "common/common/assert.h"
 
+#include "extensions/filters/network/dubbo_proxy/message_impl.h"
+#include "extensions/filters/network/dubbo_proxy/serializer_impl.h"
+
 namespace Envoy {
 namespace Extensions {
 namespace NetworkFilters {
@@ -25,8 +28,7 @@ constexpr uint64_t BodySizeOffset = 12;
 // Consistent with the SerializationType
 bool isValidSerializationType(SerializationType type) {
   switch (type) {
-  case SerializationType::Hessian:
-  case SerializationType::Json:
+  case SerializationType::Hessian2:
     break;
   default:
     return false;
@@ -60,11 +62,11 @@ void parseRequestInfoFromBuffer(Buffer::Instance& data, MessageMetadataSharedPtr
   SerializationType type = static_cast<SerializationType>(flag & SerializationTypeMask);
   if (!isValidSerializationType(type)) {
     throw EnvoyException(
-        fmt::format("invalid dubbo message serialization type {}",
-                    static_cast<std::underlying_type<SerializationType>::type>(type)));
+        absl::StrCat("invalid dubbo message serialization type ",
+                     static_cast<std::underlying_type<SerializationType>::type>(type)));
   }
 
-  if (!is_two_way) {
+  if (!is_two_way && metadata->message_type() != MessageType::HeartbeatRequest) {
     metadata->setMessageType(MessageType::Oneway);
   }
 
@@ -76,90 +78,26 @@ void parseResponseInfoFromBuffer(Buffer::Instance& buffer, MessageMetadataShared
   ResponseStatus status = static_cast<ResponseStatus>(buffer.peekInt<uint8_t>(StatusOffset));
   if (!isValidResponseStatus(status)) {
     throw EnvoyException(
-        fmt::format("invalid dubbo message response status {}",
-                    static_cast<std::underlying_type<ResponseStatus>::type>(status)));
+        absl::StrCat("invalid dubbo message response status ",
+                     static_cast<std::underlying_type<ResponseStatus>::type>(status)));
   }
 
   metadata->setResponseStatus(status);
 }
 
-void RequestMessageImpl::fromBuffer(Buffer::Instance& data) {
-  ASSERT(data.length() >= DubboProtocolImpl::MessageSize);
-  uint8_t flag = data.peekInt<uint8_t>(FlagOffset);
-  is_two_way_ = (flag & TwoWayMask) == TwoWayMask ? true : false;
-  type_ = static_cast<SerializationType>(flag & SerializationTypeMask);
-  if (!isValidSerializationType(type_)) {
-    throw EnvoyException(
-        fmt::format("invalid dubbo message serialization type {}",
-                    static_cast<std::underlying_type<SerializationType>::type>(type_)));
-  }
-}
-
-void ResponseMessageImpl::fromBuffer(Buffer::Instance& buffer) {
-  ASSERT(buffer.length() >= DubboProtocolImpl::MessageSize);
-  status_ = static_cast<ResponseStatus>(buffer.peekInt<uint8_t>(StatusOffset));
-  if (!isValidResponseStatus(status_)) {
-    throw EnvoyException(
-        fmt::format("invalid dubbo message response status {}",
-                    static_cast<std::underlying_type<ResponseStatus>::type>(status_)));
-  }
-}
-
-bool DubboProtocolImpl::decode(Buffer::Instance& buffer, Protocol::Context* context) {
-  ASSERT(callbacks_);
-
-  if (buffer.length() < DubboProtocolImpl::MessageSize) {
-    return false;
-  }
-
-  uint16_t magic_number = buffer.peekBEInt<uint16_t>();
-  if (magic_number != MagicNumber) {
-    throw EnvoyException(fmt::format("invalid dubbo message magic number {}", magic_number));
-  }
-
-  uint8_t flag = buffer.peekInt<uint8_t>(FlagOffset);
-  MessageType type =
-      (flag & MessageTypeMask) == MessageTypeMask ? MessageType::Request : MessageType::Response;
-  bool is_event = (flag & EventMask) == EventMask ? true : false;
-  int64_t request_id = buffer.peekBEInt<int64_t>(RequestIDOffset);
-  int32_t body_size = buffer.peekBEInt<int32_t>(BodySizeOffset);
-
-  if (body_size > MaxBodySize || body_size <= 0) {
-    throw EnvoyException(fmt::format("invalid dubbo message size {}", body_size));
-  }
-
-  context->body_size_ = body_size;
-
-  if (type == MessageType::Request) {
-    RequestMessageImplPtr req =
-        std::make_unique<RequestMessageImpl>(request_id, body_size, is_event);
-    req->fromBuffer(buffer);
-    context->is_request_ = true;
-    callbacks_->onRequestMessage(std::move(req));
-  } else {
-    ResponseMessageImplPtr res =
-        std::make_unique<ResponseMessageImpl>(request_id, body_size, is_event);
-    res->fromBuffer(buffer);
-    callbacks_->onResponseMessage(std::move(res));
-  }
-
-  buffer.drain(MessageSize);
-  return true;
-}
-
-bool DubboProtocolImpl::decode(Buffer::Instance& buffer, Protocol::Context* context,
-                               MessageMetadataSharedPtr metadata) {
+std::pair<ContextSharedPtr, bool>
+DubboProtocolImpl::decodeHeader(Buffer::Instance& buffer, MessageMetadataSharedPtr metadata) {
   if (!metadata) {
     throw EnvoyException("invalid metadata parameter");
   }
 
   if (buffer.length() < DubboProtocolImpl::MessageSize) {
-    return false;
+    return std::pair<ContextSharedPtr, bool>(nullptr, false);
   }
 
   uint16_t magic_number = buffer.peekBEInt<uint16_t>();
   if (magic_number != MagicNumber) {
-    throw EnvoyException(fmt::format("invalid dubbo message magic number {}", magic_number));
+    throw EnvoyException(absl::StrCat("invalid dubbo message magic number ", magic_number));
   }
 
   uint8_t flag = buffer.peekInt<uint8_t>(FlagOffset);
@@ -169,41 +107,106 @@ bool DubboProtocolImpl::decode(Buffer::Instance& buffer, Protocol::Context* cont
   int64_t request_id = buffer.peekBEInt<int64_t>(RequestIDOffset);
   int32_t body_size = buffer.peekBEInt<int32_t>(BodySizeOffset);
 
-  if (body_size > MaxBodySize || body_size <= 0) {
-    throw EnvoyException(fmt::format("invalid dubbo message size {}", body_size));
+  // The body size of the heartbeat message is zero.
+  if (body_size > MaxBodySize || body_size < 0) {
+    throw EnvoyException(absl::StrCat("invalid dubbo message size ", body_size));
   }
 
-  metadata->setMessageType(type);
   metadata->setRequestId(request_id);
 
   if (type == MessageType::Request) {
+    if (is_event) {
+      type = MessageType::HeartbeatRequest;
+    }
+    metadata->setMessageType(type);
     parseRequestInfoFromBuffer(buffer, metadata);
   } else {
+    if (is_event) {
+      type = MessageType::HeartbeatResponse;
+    }
+    metadata->setMessageType(type);
     parseResponseInfoFromBuffer(buffer, metadata);
   }
 
-  context->header_size_ = DubboProtocolImpl::MessageSize;
-  context->body_size_ = body_size;
-  context->is_heartbeat_ = is_event;
+  auto context = std::make_shared<ContextImpl>();
+  context->set_header_size(DubboProtocolImpl::MessageSize);
+  context->set_body_size(body_size);
+  context->set_heartbeat(is_event);
+
+  return std::pair<ContextSharedPtr, bool>(context, true);
+}
+
+bool DubboProtocolImpl::decodeData(Buffer::Instance& buffer, ContextSharedPtr context,
+                                   MessageMetadataSharedPtr metadata) {
+  ASSERT(serializer_);
+
+  if ((buffer.length()) < static_cast<uint64_t>(context->body_size())) {
+    return false;
+  }
+
+  switch (metadata->message_type()) {
+  case MessageType::Oneway:
+  case MessageType::Request: {
+    auto ret = serializer_->deserializeRpcInvocation(buffer, context);
+    if (!ret.second) {
+      return false;
+    }
+    metadata->setInvocationInfo(ret.first);
+    break;
+  }
+  case MessageType::Response: {
+    auto ret = serializer_->deserializeRpcResult(buffer, context);
+    if (!ret.second) {
+      return false;
+    }
+    if (ret.first->hasException()) {
+      metadata->setMessageType(MessageType::Exception);
+    }
+    break;
+  }
+  default:
+    NOT_REACHED_GCOVR_EXCL_LINE;
+  }
 
   return true;
 }
 
-bool DubboProtocolImpl::encode(Buffer::Instance& buffer, int32_t body_size,
-                               const MessageMetadata& metadata) {
+bool DubboProtocolImpl::encode(Buffer::Instance& buffer, const MessageMetadata& metadata,
+                               const std::string& content, RpcResponseType type) {
+  ASSERT(serializer_);
+
   switch (metadata.message_type()) {
-  case MessageType::Response: {
-    ASSERT(metadata.response_status().has_value());
+  case MessageType::HeartbeatResponse: {
+    ASSERT(metadata.hasResponseStatus());
+    ASSERT(content.empty());
     buffer.writeBEInt<uint16_t>(MagicNumber);
-    buffer.writeByte(static_cast<uint8_t>(metadata.serialization_type()));
-    buffer.writeByte(static_cast<uint8_t>(metadata.response_status().value()));
+    uint8_t flag = static_cast<uint8_t>(metadata.serialization_type());
+    flag = flag ^ EventMask;
+    buffer.writeByte(flag);
+    buffer.writeByte(static_cast<uint8_t>(metadata.response_status()));
     buffer.writeBEInt<uint64_t>(metadata.request_id());
-    buffer.writeBEInt<uint32_t>(body_size);
+    buffer.writeBEInt<uint32_t>(0);
     return true;
   }
-  case MessageType::Request: {
-    NOT_IMPLEMENTED_GCOVR_EXCL_LINE;
+  case MessageType::Response: {
+    ASSERT(metadata.hasResponseStatus());
+    ASSERT(!content.empty());
+    Buffer::OwnedImpl body_buffer;
+    size_t serialized_body_size = serializer_->serializeRpcResult(body_buffer, content, type);
+
+    buffer.writeBEInt<uint16_t>(MagicNumber);
+    buffer.writeByte(static_cast<uint8_t>(metadata.serialization_type()));
+    buffer.writeByte(static_cast<uint8_t>(metadata.response_status()));
+    buffer.writeBEInt<uint64_t>(metadata.request_id());
+    buffer.writeBEInt<uint32_t>(serialized_body_size);
+
+    buffer.move(body_buffer, serialized_body_size);
+    return true;
   }
+  case MessageType::Request:
+  case MessageType::Oneway:
+  case MessageType::Exception:
+    NOT_IMPLEMENTED_GCOVR_EXCL_LINE;
   default:
     NOT_REACHED_GCOVR_EXCL_LINE;
   }

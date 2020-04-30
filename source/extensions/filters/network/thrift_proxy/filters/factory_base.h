@@ -16,15 +16,16 @@ public:
   createFilterFactoryFromProto(const Protobuf::Message& proto_config,
                                const std::string& stats_prefix,
                                Server::Configuration::FactoryContext& context) override {
-    return createFilterFactoryFromProtoTyped(
-        MessageUtil::downcastAndValidate<const ConfigProto&>(proto_config), stats_prefix, context);
+    return createFilterFactoryFromProtoTyped(MessageUtil::downcastAndValidate<const ConfigProto&>(
+                                                 proto_config, context.messageValidationVisitor()),
+                                             stats_prefix, context);
   }
 
   ProtobufTypes::MessagePtr createEmptyConfigProto() override {
     return std::make_unique<ConfigProto>();
   }
 
-  std::string name() override { return name_; }
+  std::string name() const override { return name_; }
 
 protected:
   FactoryBase(const std::string& name) : name_(name) {}

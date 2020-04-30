@@ -3,6 +3,8 @@
 #include <memory>
 #include <string>
 
+#include "envoy/common/platform.h"
+
 namespace Envoy {
 namespace Api {
 /**
@@ -21,11 +23,12 @@ template <typename T> struct SysCallResult {
   int errno_;
 };
 
-typedef SysCallResult<int> SysCallIntResult;
-typedef SysCallResult<ssize_t> SysCallSizeResult;
-typedef SysCallResult<void*> SysCallPtrResult;
-typedef SysCallResult<std::string> SysCallStringResult;
-typedef SysCallResult<bool> SysCallBoolResult;
+using SysCallIntResult = SysCallResult<int>;
+using SysCallSizeResult = SysCallResult<ssize_t>;
+using SysCallPtrResult = SysCallResult<void*>;
+using SysCallStringResult = SysCallResult<std::string>;
+using SysCallBoolResult = SysCallResult<bool>;
+using SysCallSocketResult = SysCallResult<os_fd_t>;
 
 } // namespace Api
 } // namespace Envoy

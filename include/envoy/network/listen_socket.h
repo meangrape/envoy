@@ -1,11 +1,12 @@
 #pragma once
 
 #include <memory>
+#include <tuple>
 #include <vector>
 
-#include "envoy/api/v2/core/base.pb.h"
 #include "envoy/common/exception.h"
 #include "envoy/common/pure.h"
+#include "envoy/config/core/v3/base.pb.h"
 #include "envoy/network/address.h"
 #include "envoy/network/io_handle.h"
 
@@ -15,16 +16,38 @@
 namespace Envoy {
 namespace Network {
 
-// Optional variant of setsockopt(2) optname. The idea here is that if the option is not supported
-// on a platform, we can make this the empty value. This allows us to avoid proliferation of #ifdef.
-typedef absl::optional<std::pair<int, int>> SocketOptionName;
+// SocketOptionName is an optional value that captures the setsockopt(2)
+// arguments. The idea here is that if a socket option is not supported
+// on a platform, we can make this the empty value, which allows us to
+// avoid #ifdef proliferation.
+struct SocketOptionName {
+  SocketOptionName() = default;
+  SocketOptionName(const SocketOptionName&) = default;
+  SocketOptionName(int level, int option, const std::string& name)
+      : value_(std::make_tuple(level, option, name)) {}
+
+  int level() const { return std::get<0>(value_.value()); }
+  int option() const { return std::get<1>(value_.value()); }
+  const std::string& name() const { return std::get<2>(value_.value()); }
+
+  bool has_value() const { return value_.has_value(); }
+  bool operator==(const SocketOptionName& rhs) const { return value_ == rhs.value_; }
+
+private:
+  absl::optional<std::tuple<int, int, std::string>> value_;
+};
+
+// ENVOY_MAKE_SOCKET_OPTION_NAME is a helper macro to generate a
+// SocketOptionName with a descriptive string name.
+#define ENVOY_MAKE_SOCKET_OPTION_NAME(level, option)                                               \
+  Network::SocketOptionName(level, option, #level "/" #option)
 
 /**
  * Base class for Sockets
  */
 class Socket {
 public:
-  virtual ~Socket() {}
+  virtual ~Socket() = default;
 
   /**
    * @return the local address of the socket.
@@ -61,11 +84,16 @@ public:
   virtual void close() PURE;
 
   /**
+   * Return true if close() hasn't been called.
+   */
+  virtual bool isOpen() const PURE;
+
+  /**
    * Visitor class for setting socket options.
    */
   class Option {
   public:
-    virtual ~Option() {}
+    virtual ~Option() = default;
 
     /**
      * @param socket the socket on which to apply options.
@@ -74,7 +102,7 @@ public:
      * @return true if succeeded, false otherwise.
      */
     virtual bool setOption(Socket& socket,
-                           envoy::api::v2::core::SocketOption::SocketState state) const PURE;
+                           envoy::config::core::v3::SocketOption::SocketState state) const PURE;
 
     /**
      * @param vector of bytes to which the option should append hash key data that will be used
@@ -102,12 +130,12 @@ public:
      */
     virtual absl::optional<Details>
     getOptionDetails(const Socket& socket,
-                     envoy::api::v2::core::SocketOption::SocketState state) const PURE;
+                     envoy::config::core::v3::SocketOption::SocketState state) const PURE;
   };
 
-  typedef std::shared_ptr<const Option> OptionConstSharedPtr;
-  typedef std::vector<OptionConstSharedPtr> Options;
-  typedef std::shared_ptr<Options> OptionsSharedPtr;
+  using OptionConstSharedPtr = std::shared_ptr<const Option>;
+  using Options = std::vector<OptionConstSharedPtr>;
+  using OptionsSharedPtr = std::shared_ptr<Options>;
 
   static OptionsSharedPtr& appendOptions(OptionsSharedPtr& to, const OptionsSharedPtr& from) {
     to->insert(to->end(), from->begin(), from->end());
@@ -115,7 +143,7 @@ public:
   }
 
   static bool applyOptions(const OptionsSharedPtr& options, Socket& socket,
-                           envoy::api::v2::core::SocketOption::SocketState state) {
+                           envoy::config::core::v3::SocketOption::SocketState state) {
     if (options == nullptr) {
       return true;
     }
@@ -143,8 +171,9 @@ public:
   virtual const OptionsSharedPtr& options() const PURE;
 };
 
-typedef std::unique_ptr<Socket> SocketPtr;
-typedef std::shared_ptr<Socket> SocketSharedPtr;
+using SocketPtr = std::unique_ptr<Socket>;
+using SocketSharedPtr = std::shared_ptr<Socket>;
+using SocketOptRef = absl::optional<std::reference_wrapper<Socket>>;
 
 /**
  * A socket passed to a connection. For server connections this represents the accepted socket, and
@@ -155,12 +184,18 @@ typedef std::shared_ptr<Socket> SocketSharedPtr;
  */
 class ConnectionSocket : public virtual Socket {
 public:
-  virtual ~ConnectionSocket() {}
+  ~ConnectionSocket() override = default;
 
   /**
    * @return the remote address of the socket.
    */
   virtual const Address::InstanceConstSharedPtr& remoteAddress() const PURE;
+
+  /**
+   * @return the direct remote address of the socket. This is the address of the directly
+   *         connected peer, and cannot be modified by listener filters.
+   */
+  virtual const Address::InstanceConstSharedPtr& directRemoteAddress() const PURE;
 
   /**
    * Restores the local address of the socket. On accepted sockets the local address defaults to the
@@ -217,7 +252,7 @@ public:
   virtual absl::string_view requestedServerName() const PURE;
 };
 
-typedef std::unique_ptr<ConnectionSocket> ConnectionSocketPtr;
+using ConnectionSocketPtr = std::unique_ptr<ConnectionSocket>;
 
 /**
  * Thrown when there is a runtime error binding a socket.

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <iterator>
+#include <regex>
 #include <string>
 
 #include "envoy/common/exception.h"
@@ -32,7 +33,8 @@ public:
   const std::regex PATTERN{"(%([1-9])?f)|(%s)", std::regex::optimize};
 };
 
-typedef ConstSingleton<SpecifierConstantValues> SpecifierConstants;
+using SpecifierConstants = ConstSingleton<SpecifierConstantValues>;
+using UnsignedMilliseconds = std::chrono::duration<uint64_t, std::milli>;
 
 } // namespace
 
@@ -167,7 +169,7 @@ DateFormatter::fromTimeAndPrepareSpecifierOffsets(time_t time, SpecifierOffsets&
                                                   const std::string& seconds_str) const {
   std::string formatted_time;
 
-  size_t previous = 0;
+  int32_t previous = 0;
   specifier_offsets.reserve(specifiers_.size());
   for (const auto& specifier : specifiers_) {
     std::string current_format =
@@ -214,6 +216,11 @@ bool DateUtil::timePointValid(MonotonicTime time_point) {
              .count() != 0;
 }
 
+uint64_t DateUtil::nowToMilliseconds(TimeSource& time_source) {
+  const SystemTime& now = time_source.systemTime();
+  return std::chrono::time_point_cast<UnsignedMilliseconds>(now).time_since_epoch().count();
+}
+
 const char StringUtil::WhitespaceChars[] = " \t\f\v\n\r";
 
 const char* StringUtil::strtoull(const char* str, uint64_t& out, int base) {
@@ -234,21 +241,6 @@ const char* StringUtil::strtoull(const char* str, uint64_t& out, int base) {
 bool StringUtil::atoull(const char* str, uint64_t& out, int base) {
   const char* end_ptr = StringUtil::strtoull(str, out, base);
   if (end_ptr == nullptr || *end_ptr != '\0') {
-    return false;
-  } else {
-    return true;
-  }
-}
-
-bool StringUtil::atoll(const char* str, int64_t& out, int base) {
-  if (strlen(str) == 0) {
-    return false;
-  }
-
-  char* end_ptr;
-  errno = 0;
-  out = std::strtoll(str, &end_ptr, base);
-  if (*end_ptr != '\0' || ((out == LLONG_MAX || out == LLONG_MIN) && errno == ERANGE)) {
     return false;
   } else {
     return true;
@@ -277,6 +269,16 @@ absl::string_view StringUtil::rtrim(absl::string_view source) {
 
 absl::string_view StringUtil::trim(absl::string_view source) { return ltrim(rtrim(source)); }
 
+absl::string_view StringUtil::removeTrailingCharacters(absl::string_view source, char ch) {
+  const absl::string_view::size_type pos = source.find_last_not_of(ch);
+  if (pos != absl::string_view::npos) {
+    source.remove_suffix(source.size() - pos - 1);
+  } else {
+    source.remove_suffix(source.size());
+  }
+  return source;
+}
+
 bool StringUtil::findToken(absl::string_view source, absl::string_view delimiters,
                            absl::string_view key_token, bool trim_whitespace) {
   const auto tokens = splitToken(source, delimiters, trim_whitespace);
@@ -298,19 +300,14 @@ bool StringUtil::caseFindToken(absl::string_view source, absl::string_view delim
   std::function<bool(absl::string_view)> predicate;
 
   if (trim_whitespace) {
-    predicate = [&](absl::string_view token) { return caseCompare(key_token, trim(token)); };
+    predicate = [&](absl::string_view token) {
+      return absl::EqualsIgnoreCase(key_token, trim(token));
+    };
   } else {
-    predicate = [&](absl::string_view token) { return caseCompare(key_token, token); };
+    predicate = [&](absl::string_view token) { return absl::EqualsIgnoreCase(key_token, token); };
   }
 
   return std::find_if(tokens.begin(), tokens.end(), predicate) != tokens.end();
-}
-
-bool StringUtil::caseCompare(absl::string_view lhs, absl::string_view rhs) {
-  if (rhs.size() != lhs.size()) {
-    return false;
-  }
-  return absl::StartsWithIgnoreCase(rhs, lhs);
 }
 
 absl::string_view StringUtil::cropRight(absl::string_view source, absl::string_view delimiter) {
@@ -331,11 +328,32 @@ absl::string_view StringUtil::cropLeft(absl::string_view source, absl::string_vi
 
 std::vector<absl::string_view> StringUtil::splitToken(absl::string_view source,
                                                       absl::string_view delimiters,
-                                                      bool keep_empty_string) {
+                                                      bool keep_empty_string,
+                                                      bool trim_whitespace) {
+  std::vector<absl::string_view> result;
   if (keep_empty_string) {
-    return absl::StrSplit(source, absl::ByAnyChar(delimiters));
+    result = absl::StrSplit(source, absl::ByAnyChar(delimiters));
+  } else {
+    if (trim_whitespace) {
+      result = absl::StrSplit(source, absl::ByAnyChar(delimiters), absl::SkipWhitespace());
+    } else {
+      result = absl::StrSplit(source, absl::ByAnyChar(delimiters), absl::SkipEmpty());
+    }
   }
-  return absl::StrSplit(source, absl::ByAnyChar(delimiters), absl::SkipEmpty());
+
+  if (trim_whitespace) {
+    for_each(result.begin(), result.end(), [](auto& v) { v = trim(v); });
+  }
+  return result;
+}
+
+std::string StringUtil::removeTokens(absl::string_view source, absl::string_view delimiters,
+                                     const CaseUnorderedSet& tokens_to_remove,
+                                     absl::string_view joiner) {
+  auto values = Envoy::StringUtil::splitToken(source, delimiters, false, true);
+  auto end = std::remove_if(values.begin(), values.end(),
+                            [&](absl::string_view t) { return tokens_to_remove.count(t) != 0; });
+  return absl::StrJoin(values.begin(), end, joiner);
 }
 
 uint32_t StringUtil::itoa(char* out, size_t buffer_size, uint64_t i) {
@@ -357,22 +375,13 @@ uint32_t StringUtil::itoa(char* out, size_t buffer_size, uint64_t i) {
   }
 
   *current = 0;
-  return current - out;
+  return static_cast<uint32_t>(current - out);
 }
 
 size_t StringUtil::strlcpy(char* dst, const char* src, size_t size) {
   strncpy(dst, src, size - 1);
   dst[size - 1] = '\0';
   return strlen(src);
-}
-
-std::string StringUtil::join(const std::vector<std::string>& source, const std::string& delimiter) {
-  std::ostringstream buf;
-  std::copy(source.begin(), source.end(),
-            std::ostream_iterator<std::string>(buf, delimiter.c_str()));
-  std::string ret = buf.str();
-  // copy will always end with an extra delimiter, we remove it here.
-  return ret.substr(0, ret.length() - delimiter.length());
 }
 
 std::string StringUtil::subspan(absl::string_view source, size_t start, size_t end) {
@@ -407,9 +416,11 @@ std::string StringUtil::escape(const std::string& source) {
   return ret;
 }
 
-std::string AccessLogDateTimeFormatter::fromTime(const SystemTime& system_time) {
-  static const std::string DefaultDateFormat = "%Y-%m-%dT%H:%M:%E3SZ";
+const std::string& getDefaultDateFormat() {
+  CONSTRUCT_ON_FIRST_USE(std::string, "%Y-%m-%dT%H:%M:%E3SZ");
+}
 
+std::string AccessLogDateTimeFormatter::fromTime(const SystemTime& system_time) {
   struct CachedTime {
     std::chrono::seconds epoch_time_seconds;
     std::string formatted_time;
@@ -423,8 +434,8 @@ std::string AccessLogDateTimeFormatter::fromTime(const SystemTime& system_time) 
       std::chrono::duration_cast<std::chrono::seconds>(epoch_time_ms);
 
   if (cached_time.formatted_time.empty() || cached_time.epoch_time_seconds != epoch_time_seconds) {
-    cached_time.formatted_time =
-        absl::FormatTime(DefaultDateFormat, absl::FromChrono(system_time), absl::UTCTimeZone());
+    cached_time.formatted_time = absl::FormatTime(
+        getDefaultDateFormat(), absl::FromChrono(system_time), absl::UTCTimeZone());
     cached_time.epoch_time_seconds = epoch_time_seconds;
   } else {
     // Overwrite the digits in the ".000Z" at the end of the string with the
@@ -454,16 +465,9 @@ std::string StringUtil::toUpper(absl::string_view s) {
   return upper_s;
 }
 
-std::string StringUtil::toLower(absl::string_view s) {
-  std::string lower_s;
-  lower_s.reserve(s.size());
-  std::transform(s.cbegin(), s.cend(), std::back_inserter(lower_s), absl::ascii_tolower);
-  return lower_s;
-}
-
 bool StringUtil::CaseInsensitiveCompare::operator()(absl::string_view lhs,
                                                     absl::string_view rhs) const {
-  return StringUtil::caseCompare(lhs, rhs);
+  return absl::EqualsIgnoreCase(lhs, rhs);
 }
 
 uint64_t StringUtil::CaseInsensitiveHash::operator()(absl::string_view key) const {
@@ -514,22 +518,12 @@ uint32_t Primes::findPrimeLargerThan(uint32_t x) {
   return x;
 }
 
-std::regex RegexUtil::parseRegex(const std::string& regex, std::regex::flag_type flags) {
-  // TODO(zuercher): In the future, PGV (https://github.com/lyft/protoc-gen-validate) annotations
-  // may allow us to remove this in favor of direct validation of regular expressions.
-  try {
-    return std::regex(regex, flags);
-  } catch (const std::regex_error& e) {
-    throw EnvoyException(fmt::format("Invalid regex '{}': {}", regex, e.what()));
-  }
-}
-
 // https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Online_algorithm
-void WelfordStandardDeviation::update(double newValue) {
+void WelfordStandardDeviation::update(double new_value) {
   ++count_;
-  const double delta = newValue - mean_;
+  const double delta = new_value - mean_;
   mean_ += delta / count_;
-  const double delta2 = newValue - mean_;
+  const double delta2 = new_value - mean_;
   m2_ += delta * delta2;
 }
 
@@ -545,6 +539,11 @@ double WelfordStandardDeviation::computeStandardDeviation() const {
   // It seems very difficult for variance to go negative, but from the calculation in update()
   // above, I can't quite convince myself it's impossible, so put in a guard to be sure.
   return (std::isnan(variance) || variance < 0) ? std::nan("") : sqrt(variance);
+}
+
+InlineString::InlineString(const char* str, size_t size) : size_(size) {
+  RELEASE_ASSERT(size <= 0xffffffff, "size must fit in 32 bits");
+  memcpy(data_, str, size);
 }
 
 } // namespace Envoy

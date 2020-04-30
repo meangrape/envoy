@@ -12,3 +12,8 @@ Extensions
   transport_socket/transport_socket
   resource_monitor/resource_monitor
   common/common
+  cluster/cluster
+  listener/listener
+  grpc_credential/grpc_credential
+  retry/retry
+  trace/trace

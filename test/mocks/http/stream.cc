@@ -2,6 +2,7 @@
 
 using testing::_;
 using testing::Invoke;
+using testing::ReturnRef;
 
 namespace Envoy {
 namespace Http {
@@ -20,9 +21,11 @@ MockStream::MockStream() {
       callbacks->onResetStream(reason, absl::string_view());
     }
   }));
+
+  ON_CALL(*this, connectionLocalAddress()).WillByDefault(ReturnRef(connection_local_address_));
 }
 
-MockStream::~MockStream() {}
+MockStream::~MockStream() = default;
 
 } // namespace Http
 } // namespace Envoy

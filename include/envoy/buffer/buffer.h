@@ -7,12 +7,15 @@
 
 #include "envoy/api/os_sys_calls.h"
 #include "envoy/common/exception.h"
+#include "envoy/common/platform.h"
 #include "envoy/common/pure.h"
 #include "envoy/network/io_handle.h"
 
 #include "common/common/byte_order.h"
 
+#include "absl/container/inlined_vector.h"
 #include "absl/strings/string_view.h"
+#include "absl/types/optional.h"
 
 namespace Envoy {
 namespace Buffer {
@@ -27,12 +30,15 @@ struct RawSlice {
   bool operator==(const RawSlice& rhs) const { return mem_ == rhs.mem_ && len_ == rhs.len_; }
 };
 
+using RawSliceVector = absl::InlinedVector<RawSlice, 16>;
+
 /**
  * A wrapper class to facilitate passing in externally owned data to a buffer via addBufferFragment.
  * When the buffer no longer needs the data passed in through a fragment, it calls done() on it.
  */
 class BufferFragment {
 public:
+  virtual ~BufferFragment() = default;
   /**
    * @return const void* a pointer to the referenced data.
    */
@@ -47,9 +53,6 @@ public:
    * Called by a buffer when the referenced data is no longer needed.
    */
   virtual void done() PURE;
-
-protected:
-  virtual ~BufferFragment() {}
 };
 
 /**
@@ -57,7 +60,7 @@ protected:
  */
 class Instance {
 public:
-  virtual ~Instance() {}
+  virtual ~Instance() = default;
 
   /**
    * Copy data into the buffer (deprecated, use absl::string_view variant
@@ -103,8 +106,8 @@ public:
   /**
    * Commit a set of slices originally obtained from reserve(). The number of slices should match
    * the number obtained from reserve(). The size of each slice can also be altered. Commit must
-   * occur following a reserve() without any mutating operations in between other than to the iovecs
-   * len_ fields.
+   * occur once following a reserve() without any mutating operations in between other than to the
+   * iovecs len_ fields.
    * @param iovecs supplies the array of slices to commit.
    * @param num_iovecs supplies the size of the slices array.
    */
@@ -125,21 +128,12 @@ public:
   virtual void drain(uint64_t size) PURE;
 
   /**
-   * Fetch the raw buffer slices. This routine is optimized for performance.
-   * @param out supplies an array of RawSlice objects to fill.
-   * @param out_size supplies the size of out.
-   * @return the actual number of slices needed, which may be greater than out_size. Passing
-   *         nullptr for out and 0 for out_size will just return the size of the array needed
-   *         to capture all of the slice data.
-   * TODO(mattklein123): WARNING: The underlying implementation of this function currently uses
-   * libevent's evbuffer. It has the infuriating property where calling getRawSlices(nullptr, 0)
-   * will return the slices that include all of the buffer data, but not any empty slices at the
-   * end. However, calling getRawSlices(iovec, SOME_CONST), WILL return potentially empty slices
-   * beyond the end of the buffer. Code that is trying to avoid stack overflow by limiting the
-   * number of returned slices needs to deal with this. When we get rid of evbuffer we can rework
-   * all of this.
+   * Fetch the raw buffer slices.
+   * @param max_slices supplies an optional limit on the number of slices to fetch, for performance.
+   * @return RawSliceVector with non-empty slices in the buffer.
    */
-  virtual uint64_t getRawSlices(RawSlice* out, uint64_t out_size) const PURE;
+  virtual RawSliceVector
+  getRawSlices(absl::optional<uint64_t> max_slices = absl::nullopt) const PURE;
 
   /**
    * @return uint64_t the total length of the buffer (not necessarily contiguous in memory).
@@ -183,13 +177,20 @@ public:
   virtual uint64_t reserve(uint64_t length, RawSlice* iovecs, uint64_t num_iovecs) PURE;
 
   /**
-   * Search for an occurrence of a buffer within the larger buffer.
+   * Search for an occurrence of data within the buffer.
    * @param data supplies the data to search for.
    * @param size supplies the length of the data to search for.
    * @param start supplies the starting index to search from.
    * @return the index where the match starts or -1 if there is no match.
    */
   virtual ssize_t search(const void* data, uint64_t size, size_t start) const PURE;
+
+  /**
+   * Search for an occurrence of data at the start of a buffer.
+   * @param data supplies the data to search for.
+   * @return true if this buffer starts with data, false otherwise.
+   */
+  virtual bool startsWith(absl::string_view data) const PURE;
 
   /**
    * Constructs a flattened string from a buffer.
@@ -357,14 +358,14 @@ public:
   }
 };
 
-typedef std::unique_ptr<Instance> InstancePtr;
+using InstancePtr = std::unique_ptr<Instance>;
 
 /**
  * A factory for creating buffers which call callbacks when reaching high and low watermarks.
  */
 class WatermarkFactory {
 public:
-  virtual ~WatermarkFactory() {}
+  virtual ~WatermarkFactory() = default;
 
   /**
    * Creates and returns a unique pointer to a new buffer.
@@ -378,7 +379,7 @@ public:
                              std::function<void()> above_high_watermark) PURE;
 };
 
-typedef std::unique_ptr<WatermarkFactory> WatermarkFactoryPtr;
+using WatermarkFactoryPtr = std::unique_ptr<WatermarkFactory>;
 
 } // namespace Buffer
 } // namespace Envoy

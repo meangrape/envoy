@@ -27,12 +27,13 @@ public:
    */
   void setReadBufferReady() override {}
   void raiseEvent(Network::ConnectionEvent) override {}
+  void flushWriteBuffer() override {}
 
 private:
   Network::TransportSocketCallbacks& parent_;
 };
 
-typedef std::unique_ptr<NoOpTransportSocketCallbacks> NoOpTransportSocketCallbacksPtr;
+using NoOpTransportSocketCallbacksPtr = std::unique_ptr<NoOpTransportSocketCallbacks>;
 
 } // namespace Alts
 } // namespace TransportSockets

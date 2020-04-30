@@ -1,4 +1,5 @@
-#include "envoy/config/transport_socket/alts/v2alpha/alts.pb.h"
+#include "envoy/config/bootstrap/v3/bootstrap.pb.h"
+#include "envoy/extensions/transport_sockets/alts/v3/alts.pb.h"
 
 #include "common/common/thread.h"
 
@@ -20,6 +21,8 @@
 #include "grpcpp/impl/codegen/service_type.h"
 #include "gtest/gtest.h"
 
+using ::testing::ReturnRef;
+
 namespace Envoy {
 namespace Extensions {
 namespace TransportSockets {
@@ -38,18 +41,18 @@ public:
         client_connect_handshaker_(client_connect_handshaker) {}
 
   void initialize() override {
-    config_helper_.addConfigModifier([this](envoy::config::bootstrap::v2::Bootstrap& bootstrap) {
+    config_helper_.addConfigModifier([this](envoy::config::bootstrap::v3::Bootstrap& bootstrap) {
       auto* transport_socket = bootstrap.mutable_static_resources()
                                    ->mutable_listeners(0)
                                    ->mutable_filter_chains(0)
                                    ->mutable_transport_socket();
       transport_socket->set_name("envoy.transport_sockets.alts");
-      envoy::config::transport_socket::alts::v2alpha::Alts alts_config;
+      envoy::extensions::transport_sockets::alts::v3::Alts alts_config;
       if (!server_peer_identity_.empty()) {
         alts_config.add_peer_service_accounts(server_peer_identity_);
       }
       alts_config.set_handshaker_service(fakeHandshakerServerAddress(server_connect_handshaker_));
-      MessageUtil::jsonConvert(alts_config, *transport_socket->mutable_config());
+      transport_socket->mutable_typed_config()->PackFrom(alts_config);
     });
     HttpIntegrationTest::initialize();
     registerTestServerPorts({"http"});
@@ -73,15 +76,26 @@ public:
     fake_handshaker_server_ci_.waitReady();
 
     NiceMock<Server::Configuration::MockTransportSocketFactoryContext> mock_factory_ctx;
+    // We fake the singleton manager for the client, since it doesn't need to manage ALTS global
+    // state, this is done by the test server instead.
+    // TODO(htuch): Make this a proper mock.
+    class FakeSingletonManager : public Singleton::Manager {
+    public:
+      Singleton::InstanceSharedPtr get(const std::string&, Singleton::SingletonFactoryCb) override {
+        return nullptr;
+      }
+    };
+    FakeSingletonManager fsm;
+    ON_CALL(mock_factory_ctx, singletonManager()).WillByDefault(ReturnRef(fsm));
     UpstreamAltsTransportSocketConfigFactory factory;
 
-    envoy::config::transport_socket::alts::v2alpha::Alts alts_config;
+    envoy::extensions::transport_sockets::alts::v3::Alts alts_config;
     alts_config.set_handshaker_service(fakeHandshakerServerAddress(client_connect_handshaker_));
     if (!client_peer_identity_.empty()) {
       alts_config.add_peer_service_accounts(client_peer_identity_);
     }
     ProtobufTypes::MessagePtr config = factory.createEmptyConfigProto();
-    MessageUtil::jsonConvert(alts_config, *config);
+    TestUtility::jsonConvert(alts_config, *config);
     ENVOY_LOG_MISC(info, "{}", config->DebugString());
 
     client_alts_ = factory.createTransportSocketFactory(*config, mock_factory_ctx);
@@ -151,7 +165,7 @@ TEST_P(AltsIntegrationTestValidPeer, RouterRequestAndResponseWithBodyNoBuffer) {
   ConnectionCreationFunction creator = [this]() -> Network::ClientConnectionPtr {
     return makeAltsConnection();
   };
-  testRouterRequestAndResponseWithBody(1024, 512, false, &creator);
+  testRouterRequestAndResponseWithBody(1024, 512, false, false, &creator);
 }
 
 class AltsIntegrationTestEmptyPeer : public AltsIntegrationTestBase {
@@ -172,7 +186,7 @@ TEST_P(AltsIntegrationTestEmptyPeer, RouterRequestAndResponseWithBodyNoBuffer) {
   ConnectionCreationFunction creator = [this]() -> Network::ClientConnectionPtr {
     return makeAltsConnection();
   };
-  testRouterRequestAndResponseWithBody(1024, 512, false, &creator);
+  testRouterRequestAndResponseWithBody(1024, 512, false, false, &creator);
 }
 
 class AltsIntegrationTestClientInvalidPeer : public AltsIntegrationTestBase {
@@ -189,7 +203,7 @@ INSTANTIATE_TEST_SUITE_P(IpVersions, AltsIntegrationTestClientInvalidPeer,
 
 // Verifies that when client receives peer service account which does not match
 // any account in config, the handshake will fail and client closes connection.
-TEST_P(AltsIntegrationTestClientInvalidPeer, clientValidationFail) {
+TEST_P(AltsIntegrationTestClientInvalidPeer, ClientValidationFail) {
   initialize();
   codec_client_ = makeRawHttpConnection(makeAltsConnection());
   EXPECT_FALSE(codec_client_->connected());

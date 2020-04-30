@@ -29,10 +29,10 @@ bool getSamplingFlags(char c, const Tracing::Decision tracing_decision) {
 
 } // namespace
 
-SpanContextExtractor::SpanContextExtractor(Http::HeaderMap& request_headers)
+SpanContextExtractor::SpanContextExtractor(Http::RequestHeaderMap& request_headers)
     : request_headers_(request_headers) {}
 
-SpanContextExtractor::~SpanContextExtractor() {}
+SpanContextExtractor::~SpanContextExtractor() = default;
 
 bool SpanContextExtractor::extractSampled(const Tracing::Decision tracing_decision) {
   bool sampled(false);
@@ -68,7 +68,7 @@ bool SpanContextExtractor::extractSampled(const Tracing::Decision tracing_decisi
   // Checking if sampled flag has been specified. Also checking for 'true' value, as some old
   // zipkin tracers may still use that value, although should be 0 or 1.
   absl::string_view xb3_sampled = x_b3_sampled_entry->value().getStringView();
-  sampled = xb3_sampled == ZipkinCoreConstants::get().SAMPLED || xb3_sampled == "true";
+  sampled = xb3_sampled == SAMPLED || xb3_sampled == "true";
   return sampled;
 }
 
@@ -86,7 +86,7 @@ std::pair<SpanContext, bool> SpanContextExtractor::extractSpanContext(bool is_sa
   if (b3_span_id_entry && b3_trace_id_entry) {
     // Extract trace id - which can either be 128 or 64 bit. For 128 bit,
     // it needs to be divided into two 64 bit numbers (high and low).
-    const std::string tid = b3_trace_id_entry->value().c_str();
+    const std::string tid(b3_trace_id_entry->value().getStringView());
     if (b3_trace_id_entry->value().size() == 32) {
       const std::string high_tid = tid.substr(0, 16);
       const std::string low_tid = tid.substr(16, 16);
@@ -96,34 +96,33 @@ std::pair<SpanContext, bool> SpanContextExtractor::extractSpanContext(bool is_sa
             fmt::format("Invalid traceid_high {} or tracid {}", high_tid.c_str(), low_tid.c_str()));
       }
     } else if (!StringUtil::atoull(tid.c_str(), trace_id, 16)) {
-      throw ExtractorException(fmt::format("Invalid trace_id {}", tid.c_str()));
+      throw ExtractorException(absl::StrCat("Invalid trace_id ", tid.c_str()));
     }
 
-    const std::string spid = b3_span_id_entry->value().c_str();
+    const std::string spid(b3_span_id_entry->value().getStringView());
     if (!StringUtil::atoull(spid.c_str(), span_id, 16)) {
-      throw ExtractorException(fmt::format("Invalid span id {}", spid.c_str()));
+      throw ExtractorException(absl::StrCat("Invalid span id ", spid.c_str()));
     }
 
     auto b3_parent_id_entry = request_headers_.get(ZipkinCoreConstants::get().X_B3_PARENT_SPAN_ID);
-    if (b3_parent_id_entry && b3_parent_id_entry->value().size() > 0) {
-      const std::string pspid = b3_parent_id_entry->value().c_str();
+    if (b3_parent_id_entry && !b3_parent_id_entry->value().empty()) {
+      const std::string pspid(b3_parent_id_entry->value().getStringView());
       if (!StringUtil::atoull(pspid.c_str(), parent_id, 16)) {
-        throw ExtractorException(fmt::format("Invalid parent span id {}", pspid.c_str()));
+        throw ExtractorException(absl::StrCat("Invalid parent span id ", pspid.c_str()));
       }
     }
   } else {
-    return std::pair<SpanContext, bool>(SpanContext(), false);
+    return {SpanContext(), false};
   }
 
-  return std::pair<SpanContext, bool>(
-      SpanContext(trace_id_high, trace_id, span_id, parent_id, is_sampled), true);
+  return {SpanContext(trace_id_high, trace_id, span_id, parent_id, is_sampled), true};
 }
 
 std::pair<SpanContext, bool>
 SpanContextExtractor::extractSpanContextFromB3SingleFormat(bool is_sampled) {
   auto b3_head_entry = request_headers_.get(ZipkinCoreConstants::get().B3);
   ASSERT(b3_head_entry);
-  const std::string b3 = b3_head_entry->value().c_str();
+  const std::string b3(b3_head_entry->value().getStringView());
   if (!b3.length()) {
     throw ExtractorException("Invalid input: empty");
   }
@@ -219,8 +218,7 @@ SpanContextExtractor::extractSpanContextFromB3SingleFormat(bool is_sampled) {
     }
   }
 
-  return std::pair<SpanContext, bool>(
-      SpanContext(trace_id_high, trace_id, span_id, parent_id, is_sampled), true);
+  return {SpanContext(trace_id_high, trace_id, span_id, parent_id, is_sampled), true};
 }
 
 } // namespace Zipkin

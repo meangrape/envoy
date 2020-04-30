@@ -13,19 +13,19 @@ public:
   EchoIntegrationTest() : BaseIntegrationTest(GetParam(), echo_config) {}
 
   // Called once by the gtest framework before any EchoIntegrationTests are run.
-  static void SetUpTestSuite() {
-    echo_config = ConfigHelper::BASE_CONFIG + R"EOF(
+  static void SetUpTestSuite() { // NOLINT(readability-identifier-naming)
+    echo_config = absl::StrCat(ConfigHelper::baseConfig(), R"EOF(
     filter_chains:
       filters:
-        name: envoy.ratelimit
-        config:
+        name: ratelimit
+        typed_config:
+          "@type": type.googleapis.com/envoy.config.filter.network.rate_limit.v2.RateLimit
           domain: foo
           stats_prefix: name
           descriptors: [{"key": "foo", "value": "bar"}]
       filters:
-        name: envoy.echo
-        config:
-      )EOF";
+        name: envoy.filters.network.echo
+      )EOF");
   }
 
   /**
@@ -63,13 +63,14 @@ TEST_P(EchoIntegrationTest, Hello) {
 
 TEST_P(EchoIntegrationTest, AddRemoveListener) {
   const std::string json = TestEnvironment::substitute(R"EOF(
-  {
-    "name": "new_listener",
-    "address": "tcp://{{ ip_loopback_address }}:0",
-    "filters": [
-      { "name": "echo", "config": {} }
-    ]
-  }
+name: new_listener
+address:
+  socket_address:
+    address: "{{ ip_loopback_address }}"
+    port_value: 0
+filter_chains:
+- filters:
+  - name: envoy.filters.network.echo
   )EOF",
                                                        GetParam());
 
@@ -80,7 +81,7 @@ TEST_P(EchoIntegrationTest, AddRemoveListener) {
       [&listener_added_by_worker]() -> void { listener_added_by_worker.setReady(); });
   test_server_->server().dispatcher().post([this, json, &listener_added_by_manager]() -> void {
     EXPECT_TRUE(test_server_->server().listenerManager().addOrUpdateListener(
-        Server::parseListenerFromJson(json), "", true));
+        Server::parseListenerFromV2Yaml(json), "", true));
     listener_added_by_manager.setReady();
   });
   listener_added_by_worker.waitReady();
@@ -91,7 +92,7 @@ TEST_P(EchoIntegrationTest, AddRemoveListener) {
                                    .listenerManager()
                                    .listeners()[1]
                                    .get()
-                                   .socket()
+                                   .listenSocketFactory()
                                    .localAddress()
                                    ->ip()
                                    ->port();
@@ -132,7 +133,7 @@ TEST_P(EchoIntegrationTest, AddRemoveListener) {
         [&](Network::ClientConnection&, const Buffer::Instance&) -> void { FAIL(); }, version_);
     while (connection2.connecting()) {
       // Don't busy loop, but macOS often needs a moment to decide this connection isn't happening.
-      timeSystem().sleep(std::chrono::milliseconds(10));
+      timeSystem().advanceTimeWait(std::chrono::milliseconds(10));
 
       connection2.run(Event::Dispatcher::RunType::NonBlock);
     }

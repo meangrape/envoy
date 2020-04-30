@@ -19,14 +19,16 @@ namespace Common {
 namespace Lua {
 namespace {
 
-class TestObject : public BaseLuaObject<TestObject> {
+// Setting large alignment requirement here so it fails the UBSAN tests if Lua allocated memory is
+// not aligned by Envoy. See https://github.com/envoyproxy/envoy/issues/5551 for details.
+class alignas(32) TestObject : public BaseLuaObject<TestObject> {
 public:
-  ~TestObject() { onDestroy(); }
+  ~TestObject() override { onDestroy(); }
 
   static ExportedFunctions exportedFunctions() { return {{"testCall", static_luaTestCall}}; }
 
-  MOCK_METHOD1(doTestCall, int(lua_State* state));
-  MOCK_METHOD0(onDestroy, void());
+  MOCK_METHOD(int, doTestCall, (lua_State * state));
+  MOCK_METHOD(void, onDestroy, ());
 
 private:
   DECLARE_LUA_FUNCTION(TestObject, luaTestCall);

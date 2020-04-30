@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include "envoy/config/filter/network/rate_limit/v2/rate_limit.pb.h"
+#include "envoy/extensions/filters/network/ratelimit/v3/rate_limit.pb.h"
 #include "envoy/network/connection.h"
 #include "envoy/network/filter.h"
 #include "envoy/ratelimit/ratelimit.h"
@@ -23,16 +23,14 @@ namespace RateLimitFilter {
 /**
  * All tcp rate limit stats. @see stats_macros.h
  */
-// clang-format off
 #define ALL_TCP_RATE_LIMIT_STATS(COUNTER, GAUGE)                                                   \
-  COUNTER(total)                                                                                   \
-  COUNTER(error)                                                                                   \
-  COUNTER(over_limit)                                                                              \
-  COUNTER(ok)                                                                                      \
-  COUNTER(failure_mode_allowed)                                                                    \
   COUNTER(cx_closed)                                                                               \
-  GAUGE  (active)
-// clang-format on
+  COUNTER(error)                                                                                   \
+  COUNTER(failure_mode_allowed)                                                                    \
+  COUNTER(ok)                                                                                      \
+  COUNTER(over_limit)                                                                              \
+  COUNTER(total)                                                                                   \
+  GAUGE(active, Accumulate)
 
 /**
  * Struct definition for all tcp rate limit stats. @see stats_macros.h
@@ -46,7 +44,7 @@ struct InstanceStats {
  */
 class Config {
 public:
-  Config(const envoy::config::filter::network::rate_limit::v2::RateLimit& config,
+  Config(const envoy::extensions::filters::network::ratelimit::v3::RateLimit& config,
          Stats::Scope& scope, Runtime::Loader& runtime);
   const std::string& domain() { return domain_; }
   const std::vector<RateLimit::Descriptor>& descriptors() { return descriptors_; }
@@ -64,7 +62,7 @@ private:
   const bool failure_mode_deny_;
 };
 
-typedef std::shared_ptr<Config> ConfigSharedPtr;
+using ConfigSharedPtr = std::shared_ptr<Config>;
 
 /**
  * TCP rate limit filter instance. This filter will call the rate limit service with the given
@@ -94,7 +92,8 @@ public:
 
   // RateLimit::RequestCallbacks
   void complete(Filters::Common::RateLimit::LimitStatus status,
-                Http::HeaderMapPtr&& headers) override;
+                Http::ResponseHeaderMapPtr&& response_headers_to_add,
+                Http::RequestHeaderMapPtr&& request_headers_to_add) override;
 
 private:
   enum class Status { NotStarted, Calling, Complete };

@@ -22,6 +22,7 @@ envoy_cc_library(
         ":dispatcher_includes",
         ":libevent_scheduler_lib",
         ":real_time_system_lib",
+        "//include/envoy/common:scope_tracker_interface",
         "//include/envoy/common:time_interface",
         "//include/envoy/event:signal_interface",
         "//include/envoy/network:listen_socket_interface",
@@ -74,7 +75,13 @@ envoy_cc_library(
         "//include/envoy/network:connection_handler_interface",
         "//source/common/common:minimal_logger_lib",
         "//source/common/common:thread_lib",
-    ],
+        "//source/common/signal:fatal_error_handler_lib",
+    ] + select({
+        "//bazel:disable_signal_trace": [],
+        "//conditions:default": [
+            "//source/common/signal:sigaction_lib",
+        ],
+    }),
 )
 
 envoy_cc_library(
@@ -98,6 +105,7 @@ envoy_cc_library(
     deps = [
         ":libevent_lib",
         ":timer_lib",
+        "//include/envoy/event:dispatcher_interface",
         "//include/envoy/event:timer_interface",
         "//source/common/common:assert_lib",
     ],
@@ -112,22 +120,15 @@ envoy_cc_library(
         ":event_impl_base_lib",
         ":libevent_lib",
         "//include/envoy/event:timer_interface",
+        "//source/common/common:scope_tracker",
     ],
 )
 
 envoy_cc_library(
-    name = "dispatched_thread_lib",
-    srcs = ["dispatched_thread.cc"],
-    hdrs = ["dispatched_thread.h"],
-    external_deps = [
-        "event",
-    ],
+    name = "deferred_task",
+    hdrs = ["deferred_task.h"],
     deps = [
-        ":dispatcher_lib",
-        "//include/envoy/api:api_interface",
+        "//include/envoy/event:deferred_deletable",
         "//include/envoy/event:dispatcher_interface",
-        "//source/common/common:minimal_logger_lib",
-        "//source/common/common:thread_lib",
-        "//source/server:guarddog_lib",
     ],
 )

@@ -2,6 +2,7 @@ licenses(["notice"])  # Apache 2
 
 load(
     "//bazel:envoy_build_system.bzl",
+    "envoy_cc_fuzz_test",
     "envoy_cc_test",
     "envoy_cc_test_library",
     "envoy_package",
@@ -18,8 +19,9 @@ envoy_cc_test(
         "//test/mocks/http:http_mocks",
         "//test/mocks/tracing:tracing_mocks",
         "//test/mocks/upstream:upstream_mocks",
-        "//test/proto:helloworld_proto_cc",
+        "//test/proto:helloworld_proto_cc_proto",
         "//test/test_common:test_time_lib",
+        "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
     ],
 )
 
@@ -33,6 +35,19 @@ envoy_cc_test(
         "//test/mocks/thread_local:thread_local_mocks",
         "//test/mocks/upstream:upstream_mocks",
         "//test/test_common:utility_lib",
+        "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
+    ],
+)
+
+envoy_cc_fuzz_test(
+    name = "codec_fuzz_test",
+    srcs = ["codec_fuzz_test.cc"],
+    corpus = "codec_corpus",
+    deps = [
+        "//source/common/buffer:buffer_lib",
+        "//source/common/grpc:codec_lib",
+        "//test/fuzz:utility_lib",
+        "//test/proto:helloworld_proto_cc_proto",
     ],
 )
 
@@ -42,7 +57,8 @@ envoy_cc_test(
     deps = [
         "//source/common/buffer:buffer_lib",
         "//source/common/grpc:codec_lib",
-        "//test/proto:helloworld_proto_cc",
+        "//test/common/buffer:utility_lib",
+        "//test/proto:helloworld_proto_cc_proto",
     ],
 )
 
@@ -53,9 +69,33 @@ envoy_cc_test(
         "//source/common/grpc:common_lib",
         "//source/common/http:headers_lib",
         "//test/mocks/upstream:upstream_mocks",
-        "//test/proto:helloworld_proto_cc",
+        "//test/proto:helloworld_proto_cc_proto",
         "//test/test_common:utility_lib",
     ],
+)
+
+envoy_cc_test(
+    name = "context_impl_test",
+    srcs = ["context_impl_test.cc"],
+    deps = [
+        "//source/common/grpc:common_lib",
+        "//source/common/http:headers_lib",
+        "//source/common/stats:fake_symbol_table_lib",
+        "//test/mocks/upstream:upstream_mocks",
+        "//test/test_common:global_lib",
+    ],
+)
+
+envoy_cc_test(
+    name = "google_grpc_utils_test",
+    srcs = envoy_select_google_grpc(["google_grpc_utils_test.cc"]),
+    deps = [
+        "//source/common/grpc:common_lib",
+        "//source/common/http:headers_lib",
+        "//test/mocks/upstream:upstream_mocks",
+        "//test/proto:helloworld_proto_cc_proto",
+        "//test/test_common:utility_lib",
+    ] + envoy_select_google_grpc(["//source/common/grpc:google_grpc_utils_lib"]),
 )
 
 envoy_cc_test(
@@ -69,7 +109,7 @@ envoy_cc_test(
         "//source/common/tracing:http_tracer_lib",
         "//test/mocks/grpc:grpc_mocks",
         "//test/mocks/tracing:tracing_mocks",
-        "//test/proto:helloworld_proto_cc",
+        "//test/proto:helloworld_proto_cc_proto",
         "//test/test_common:test_time_lib",
         "//test/test_common:utility_lib",
     ] + envoy_select_google_grpc(["//source/common/grpc:google_async_client_lib"]),
@@ -78,6 +118,7 @@ envoy_cc_test(
 envoy_cc_test(
     name = "google_grpc_creds_test",
     srcs = envoy_select_google_grpc(["google_grpc_creds_test.cc"]),
+    data = [":service_key.json"],
     deps = [
         ":utility_lib",
         "//test/mocks/stats:stats_mocks",
@@ -92,6 +133,7 @@ envoy_cc_test_library(
         "//source/common/common:assert_lib",
         "//test/mocks/secret:secret_mocks",
         "//test/test_common:utility_lib",
+        "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
     ],
 )
 
@@ -107,15 +149,20 @@ envoy_cc_test_library(
         "//test/integration:integration_lib",
         "//test/mocks/local_info:local_info_mocks",
         "//test/mocks/server:server_mocks",
-        "//test/proto:helloworld_proto_cc",
+        "//test/proto:helloworld_proto_cc_proto",
+        "//test/test_common:global_lib",
         "//test/test_common:test_time_lib",
         "//test/test_common:utility_lib",
+        "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
+        "@envoy_api//envoy/extensions/transport_sockets/tls/v3:pkg_cc_proto",
     ],
 )
 
 envoy_cc_test(
     name = "grpc_client_integration_test",
     srcs = ["grpc_client_integration_test.cc"],
+    # Fails on windows; Connection is terminated early testing BasicStream/IPv4_EnvoyGrpc
+    tags = ["fails_on_windows"],
     deps = [
         ":grpc_client_integration_test_harness_lib",
         "//source/common/grpc:async_client_lib",
@@ -130,6 +177,6 @@ envoy_cc_test_library(
     data = ["//test/config/integration/certs"],
     deps = [
         "//test/test_common:environment_lib",
-        "@envoy_api//envoy/api/v2/core:grpc_service_cc",
+        "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
     ],
 )

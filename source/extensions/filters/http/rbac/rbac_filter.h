@@ -2,7 +2,7 @@
 
 #include <memory>
 
-#include "envoy/config/filter/http/rbac/v2/rbac.pb.h"
+#include "envoy/extensions/filters/http/rbac/v3/rbac.pb.h"
 #include "envoy/http/filter.h"
 #include "envoy/stats/scope.h"
 #include "envoy/stats/stats_macros.h"
@@ -20,16 +20,17 @@ namespace RBACFilter {
 class RoleBasedAccessControlRouteSpecificFilterConfig : public Router::RouteSpecificFilterConfig {
 public:
   RoleBasedAccessControlRouteSpecificFilterConfig(
-      const envoy::config::filter::http::rbac::v2::RBACPerRoute& per_route_config);
+      const envoy::extensions::filters::http::rbac::v3::RBACPerRoute& per_route_config);
 
-  const absl::optional<Filters::Common::RBAC::RoleBasedAccessControlEngineImpl>&
+  const Filters::Common::RBAC::RoleBasedAccessControlEngineImpl*
   engine(Filters::Common::RBAC::EnforcementMode mode) const {
-    return mode == Filters::Common::RBAC::EnforcementMode::Enforced ? engine_ : shadow_engine_;
+    return mode == Filters::Common::RBAC::EnforcementMode::Enforced ? engine_.get()
+                                                                    : shadow_engine_.get();
   }
 
 private:
-  const absl::optional<Filters::Common::RBAC::RoleBasedAccessControlEngineImpl> engine_;
-  const absl::optional<Filters::Common::RBAC::RoleBasedAccessControlEngineImpl> shadow_engine_;
+  std::unique_ptr<Filters::Common::RBAC::RoleBasedAccessControlEngineImpl> engine_;
+  std::unique_ptr<Filters::Common::RBAC::RoleBasedAccessControlEngineImpl> shadow_engine_;
 };
 
 /**
@@ -38,29 +39,30 @@ private:
 class RoleBasedAccessControlFilterConfig {
 public:
   RoleBasedAccessControlFilterConfig(
-      const envoy::config::filter::http::rbac::v2::RBAC& proto_config,
+      const envoy::extensions::filters::http::rbac::v3::RBAC& proto_config,
       const std::string& stats_prefix, Stats::Scope& scope);
 
   Filters::Common::RBAC::RoleBasedAccessControlFilterStats& stats() { return stats_; }
 
-  const absl::optional<Filters::Common::RBAC::RoleBasedAccessControlEngineImpl>&
+  const Filters::Common::RBAC::RoleBasedAccessControlEngineImpl*
   engine(const Router::RouteConstSharedPtr route,
          Filters::Common::RBAC::EnforcementMode mode) const;
 
 private:
-  const absl::optional<Filters::Common::RBAC::RoleBasedAccessControlEngineImpl>&
+  const Filters::Common::RBAC::RoleBasedAccessControlEngineImpl*
   engine(Filters::Common::RBAC::EnforcementMode mode) const {
-    return mode == Filters::Common::RBAC::EnforcementMode::Enforced ? engine_ : shadow_engine_;
+    return mode == Filters::Common::RBAC::EnforcementMode::Enforced ? engine_.get()
+                                                                    : shadow_engine_.get();
   }
 
   Filters::Common::RBAC::RoleBasedAccessControlFilterStats stats_;
 
-  const absl::optional<Filters::Common::RBAC::RoleBasedAccessControlEngineImpl> engine_;
-  const absl::optional<Filters::Common::RBAC::RoleBasedAccessControlEngineImpl> shadow_engine_;
+  std::unique_ptr<const Filters::Common::RBAC::RoleBasedAccessControlEngineImpl> engine_;
+  std::unique_ptr<const Filters::Common::RBAC::RoleBasedAccessControlEngineImpl> shadow_engine_;
 };
 
-typedef std::shared_ptr<RoleBasedAccessControlFilterConfig>
-    RoleBasedAccessControlFilterConfigSharedPtr;
+using RoleBasedAccessControlFilterConfigSharedPtr =
+    std::shared_ptr<RoleBasedAccessControlFilterConfig>;
 
 /**
  * A filter that provides role-based access control authorization for HTTP requests.
@@ -72,13 +74,14 @@ public:
       : config_(config) {}
 
   // Http::StreamDecoderFilter
-  Http::FilterHeadersStatus decodeHeaders(Http::HeaderMap& headers, bool end_stream) override;
+  Http::FilterHeadersStatus decodeHeaders(Http::RequestHeaderMap& headers,
+                                          bool end_stream) override;
 
   Http::FilterDataStatus decodeData(Buffer::Instance&, bool) override {
     return Http::FilterDataStatus::Continue;
   }
 
-  Http::FilterTrailersStatus decodeTrailers(Http::HeaderMap&) override {
+  Http::FilterTrailersStatus decodeTrailers(Http::RequestTrailerMap&) override {
     return Http::FilterTrailersStatus::Continue;
   }
 

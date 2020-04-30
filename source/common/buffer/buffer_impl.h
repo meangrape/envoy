@@ -10,6 +10,7 @@
 
 #include "common/common/assert.h"
 #include "common/common/non_copyable.h"
+#include "common/common/utility.h"
 #include "common/event/libevent.h"
 
 namespace Envoy {
@@ -18,14 +19,14 @@ namespace Buffer {
 /**
  * A Slice manages a contiguous block of bytes.
  * The block is arranged like this:
- *                   |<- data_size() -->|<- reservable_size() ->|
- * +-----------------+------------------+-----------------------+
- * | Drained         | Data             | Reservable            |
- * | Unused space    | Usable content   | New content can be    |
- * | that formerly   |                  | added here with       |
- * | was in the Data |                  | reserve()/commit()    |
- * | section         |                  |                       |
- * +-----------------+------------------+-----------------------+
+ *                   |<- dataSize() ->|<- reservableSize() ->|
+ * +-----------------+----------------+----------------------+
+ * | Drained         | Data           | Reservable           |
+ * | Unused space    | Usable content | New content can be   |
+ * | that formerly   |                | added here with      |
+ * | was in the Data |                | reserve()/commit()   |
+ * | section         |                |                      |
+ * +-----------------+----------------+----------------------+
  *                   ^
  *                   |
  *                   data()
@@ -58,23 +59,20 @@ public:
   void drain(uint64_t size) {
     ASSERT(data_ + size <= reservable_);
     data_ += size;
-    if (data_ == reservable_ && !reservation_outstanding_) {
-      // There is no more content in the slice, and there is no outstanding reservation,
-      // so reset the Data section to the start of the slice to facilitate reuse.
-      data_ = reservable_ = 0;
+    if (data_ == reservable_) {
+      // All the data in the slice has been drained. Reset the offsets so all
+      // the data can be reused.
+      data_ = 0;
+      reservable_ = 0;
     }
   }
 
   /**
    * @return the number of bytes available to be reserve()d.
-   * @note If reserve() has been called without a corresponding commit(), this method
-   *       should return 0.
    * @note Read-only implementations of Slice should return zero from this method.
    */
   uint64_t reservableSize() const {
-    if (reservation_outstanding_) {
-      return 0;
-    }
+    ASSERT(capacity_ >= reservable_);
     return capacity_ - reservable_;
   }
 
@@ -84,7 +82,7 @@ public:
    * section.
    * @note If there is already an outstanding reservation (i.e., a reservation obtained
    *       from reserve() that has not been released by calling commit()), this method will
-   *       return {nullptr, 0}.
+   *       return a new reservation that replaces it.
    * @param size the number of bytes to reserve. The Slice implementation MAY reserve
    *        fewer bytes than requested (for example, if it doesn't have enough room in the
    *        Reservable section to fulfill the whole request).
@@ -93,17 +91,20 @@ public:
    * @note Read-only implementations of Slice should return {nullptr, 0} from this method.
    */
   Reservation reserve(uint64_t size) {
-    if (reservation_outstanding_ || size == 0) {
+    if (size == 0) {
       return {nullptr, 0};
     }
+    // Verify the semantics that drain() enforces: if the slice is empty, either because
+    // no data has been added or because all the added data has been drained, the data
+    // section is at the very start of the slice.
+    ASSERT(!(dataSize() == 0 && data_ > 0));
     uint64_t available_size = capacity_ - reservable_;
     if (available_size == 0) {
       return {nullptr, 0};
     }
     uint64_t reservation_size = std::min(size, available_size);
     void* reservation = &(base_[reservable_]);
-    reservation_outstanding_ = true;
-    return {reservation, reservation_size};
+    return {reservation, static_cast<size_t>(reservation_size)};
   }
 
   /**
@@ -124,9 +125,7 @@ public:
       // The reservation is not from this OwnedSlice.
       return false;
     }
-    ASSERT(reservation_outstanding_);
     reservable_ += reservation.len_;
-    reservation_outstanding_ = false;
     return true;
   }
 
@@ -137,9 +136,6 @@ public:
    * @return number of bytes copied (may be a smaller than size, may even be zero).
    */
   uint64_t append(const void* data, uint64_t size) {
-    if (reservation_outstanding_) {
-      return 0;
-    }
     uint64_t copy_size = std::min(size, reservableSize());
     uint8_t* dest = base_ + reservable_;
     reservable_ += copy_size;
@@ -157,9 +153,6 @@ public:
    * @return number of bytes copied (may be a smaller than size, may even be zero).
    */
   uint64_t prepend(const void* data, uint64_t size) {
-    if (reservation_outstanding_) {
-      return 0;
-    }
     const uint8_t* src = static_cast<const uint8_t*>(data);
     uint64_t copy_size;
     if (dataSize() == 0) {
@@ -181,6 +174,25 @@ public:
     return copy_size;
   }
 
+  /**
+   * @return true if content in this Slice can be coalesced into another Slice.
+   */
+  virtual bool canCoalesce() const { return true; }
+
+  /**
+   * Describe the in-memory representation of the slice. For use
+   * in tests that want to make assertions about the specific arrangement of
+   * bytes in a slice.
+   */
+  struct SliceRepresentation {
+    uint64_t data;
+    uint64_t reservable;
+    uint64_t capacity;
+  };
+  SliceRepresentation describeSliceForTest() const {
+    return SliceRepresentation{dataSize(), reservableSize(), capacity_};
+  }
+
 protected:
   Slice(uint64_t data, uint64_t reservable, uint64_t capacity)
       : data_(data), reservable_(reservable), capacity_(capacity) {}
@@ -196,14 +208,12 @@ protected:
 
   /** Total number of bytes in the slice */
   uint64_t capacity_;
-
-  /** Whether reserve() has been called without a corresponding commit(). */
-  bool reservation_outstanding_{false};
 };
 
 using SlicePtr = std::unique_ptr<Slice>;
 
-class OwnedSlice : public Slice {
+// OwnedSlice can not be derived from as it has variable sized array as member.
+class OwnedSlice final : public Slice, public InlineStorage {
 public:
   /**
    * Create an empty OwnedSlice.
@@ -230,16 +240,7 @@ public:
     return slice;
   }
 
-  // Custom delete operator to keep C++14 from using the global operator delete(void*, size_t),
-  // which would result in the compiler error:
-  // "exception cleanup for this placement new selects non-placement operator delete"
-  static void operator delete(void* address) { ::operator delete(address); }
-
 private:
-  static void* operator new(size_t object_size, size_t data_size) {
-    return ::operator new(object_size + data_size);
-  }
-
   OwnedSlice(uint64_t size) : Slice(0, 0, size) { base_ = storage_; }
 
   /**
@@ -360,9 +361,9 @@ public:
     size_t index_;
   };
 
-  ConstIterator begin() const noexcept { return ConstIterator(*this, 0); }
+  ConstIterator begin() const noexcept { return {*this, 0}; }
 
-  ConstIterator end() const noexcept { return ConstIterator(*this, size_); }
+  ConstIterator end() const noexcept { return {*this, size_}; }
 
 private:
   constexpr static size_t InlineRingCapacity = 8;
@@ -419,6 +420,13 @@ public:
 
   ~UnownedSlice() override { fragment_.done(); }
 
+  /**
+   * BufferFragment objects encapsulated by UnownedSlice are used to track when response content
+   * is written into transport connection. As a result these slices can not be coalesced when moved
+   * between buffers.
+   */
+  bool canCoalesce() const override { return false; }
+
 private:
   BufferFragment& fragment_;
 };
@@ -460,8 +468,6 @@ private:
 
 class LibEventInstance : public Instance {
 public:
-  // Allows access into the underlying buffer for move() optimizations.
-  virtual Event::Libevent::BufferPtr& buffer() PURE;
   // Called after accessing the memory in buffer() directly to allow any post-processing.
   virtual void postProcess() PURE;
 };
@@ -513,7 +519,7 @@ public:
   void commit(RawSlice* iovecs, uint64_t num_iovecs) override;
   void copyOut(size_t start, uint64_t size, void* data) const override;
   void drain(uint64_t size) override;
-  uint64_t getRawSlices(RawSlice* out, uint64_t out_size) const override;
+  RawSliceVector getRawSlices(absl::optional<uint64_t> max_slices = absl::nullopt) const override;
   uint64_t length() const override;
   void* linearize(uint32_t size) override;
   void move(Instance& rhs) override;
@@ -521,12 +527,12 @@ public:
   Api::IoCallUint64Result read(Network::IoHandle& io_handle, uint64_t max_length) override;
   uint64_t reserve(uint64_t length, RawSlice* iovecs, uint64_t num_iovecs) override;
   ssize_t search(const void* data, uint64_t size, size_t start) const override;
+  bool startsWith(absl::string_view data) const override;
   Api::IoCallUint64Result write(Network::IoHandle& io_handle) override;
   std::string toString() const override;
 
   // LibEventInstance
-  Event::Libevent::BufferPtr& buffer() override { return buffer_; }
-  virtual void postProcess() override;
+  void postProcess() override;
 
   /**
    * Create a new slice at the end of the buffer, and copy the supplied content into it.
@@ -541,22 +547,12 @@ public:
    */
   void appendSliceForTest(absl::string_view data);
 
-  // Support for choosing the buffer implementation at runtime.
-  // TODO(brian-pane) remove this once the new implementation has been
-  // running in production for a while.
-
-  /** @return whether this buffer uses the old evbuffer-based implementation. */
-  bool usesOldImpl() const { return old_impl_; }
-
   /**
-   * @param use_old_impl whether to use the evbuffer-based implementation for new buffers
-   * @warning Except for testing code, this method should be called at most once per process,
-   *          before any OwnedImpl objects are created. The reason is that it is unsafe to
-   *          mix and match buffers with different implementations. The move() method,
-   *          in particular, only works if the source and destination objects are using
-   *          the same destination.
+   * Describe the in-memory representation of the slices in the buffer. For use
+   * in tests that want to make assertions about the specific arrangement of
+   * bytes in the buffer.
    */
-  static void useOldImpl(bool use_old_impl);
+  std::vector<OwnedSlice::SliceRepresentation> describeSlicesForTest() const;
 
 private:
   /**
@@ -566,21 +562,62 @@ private:
    */
   bool isSameBufferImpl(const Instance& rhs) const;
 
-  /** Whether to use the old evbuffer implementation when constructing new OwnedImpl objects. */
-  static bool use_old_impl_;
+  void addImpl(const void* data, uint64_t size);
 
-  /** Whether this buffer uses the old evbuffer implementation. */
-  bool old_impl_;
+  /**
+   * Moves contents of the `other_slice` by either taking its ownership or coalescing it
+   * into an existing slice.
+   * NOTE: the caller is responsible for draining the buffer that contains the `other_slice`.
+   */
+  void coalesceOrAddSlice(SlicePtr&& other_slice);
 
   /** Ring buffer of slices. */
   SliceDeque slices_;
 
   /** Sum of the dataSize of all slices. */
   OverflowDetectingUInt64 length_;
-
-  /** Used when old_impl_==true */
-  Event::Libevent::BufferPtr buffer_;
 };
+
+using BufferFragmentPtr = std::unique_ptr<BufferFragment>;
+
+/**
+ * An implementation of BufferFragment where a releasor callback is called when the data is
+ * no longer needed. Copies data into internal buffer.
+ */
+class OwnedBufferFragmentImpl final : public BufferFragment, public InlineStorage {
+public:
+  using Releasor = std::function<void(const OwnedBufferFragmentImpl*)>;
+
+  /**
+   * Copies the data into internal buffer. The releasor is called when the data has been
+   * fully drained or the buffer that contains this fragment is destroyed.
+   * @param data external data to reference
+   * @param releasor a callback function to be called when data is no longer needed.
+   */
+
+  static BufferFragmentPtr create(absl::string_view data, const Releasor& releasor) {
+    return BufferFragmentPtr(new (sizeof(OwnedBufferFragmentImpl) + data.size())
+                                 OwnedBufferFragmentImpl(data, releasor));
+  }
+
+  // Buffer::BufferFragment
+  const void* data() const override { return data_; }
+  size_t size() const override { return size_; }
+  void done() override { releasor_(this); }
+
+private:
+  OwnedBufferFragmentImpl(absl::string_view data, const Releasor& releasor)
+      : releasor_(releasor), size_(data.size()) {
+    ASSERT(releasor != nullptr);
+    memcpy(data_, data.data(), data.size());
+  }
+
+  const Releasor releasor_;
+  const size_t size_;
+  uint8_t data_[];
+};
+
+using OwnedBufferFragmentImplPtr = std::unique_ptr<OwnedBufferFragmentImpl>;
 
 } // namespace Buffer
 } // namespace Envoy

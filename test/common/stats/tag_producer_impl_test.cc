@@ -1,4 +1,4 @@
-#include "envoy/config/metrics/v2/stats.pb.h"
+#include "envoy/config/metrics/v3/stats.pb.h"
 
 #include "common/config/well_known_names.h"
 #include "common/stats/tag_producer_impl.h"
@@ -11,13 +11,13 @@ namespace Envoy {
 namespace Stats {
 
 TEST(TagProducerTest, CheckConstructor) {
-  envoy::config::metrics::v2::StatsConfig stats_config;
+  envoy::config::metrics::v3::StatsConfig stats_config;
 
   // Should pass there were no tag name conflict.
   auto& tag_specifier1 = *stats_config.mutable_stats_tags()->Add();
   tag_specifier1.set_tag_name("test.x");
   tag_specifier1.set_fixed_value("xxx");
-  TagProducerImpl{stats_config};
+  EXPECT_NO_THROW(TagProducerImpl{stats_config});
 
   // Should raise an error when duplicate tag names are specified.
   auto& tag_specifier2 = *stats_config.mutable_stats_tags()->Add();

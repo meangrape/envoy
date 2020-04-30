@@ -1,6 +1,6 @@
 #pragma once
 
-#include "envoy/config/filter/http/jwt_authn/v2alpha/config.pb.h"
+#include "envoy/extensions/filters/http/jwt_authn/v3/config.pb.h"
 #include "envoy/http/header_map.h"
 
 namespace Envoy {
@@ -9,14 +9,14 @@ namespace HttpFilters {
 namespace JwtAuthn {
 
 class Matcher;
-typedef std::unique_ptr<const Matcher> MatcherConstPtr;
+using MatcherConstPtr = std::unique_ptr<const Matcher>;
 
 /**
  * Supports matching a HTTP requests with JWT requirements.
  */
 class Matcher {
 public:
-  virtual ~Matcher() {}
+  virtual ~Matcher() = default;
 
   /**
    * Returns if a HTTP request matches with the rules of the matcher.
@@ -25,7 +25,7 @@ public:
    *                   there are none headers available.
    * @return  true if request is a match, false otherwise.
    */
-  virtual bool matches(const Http::HeaderMap& headers) const PURE;
+  virtual bool matches(const Http::RequestHeaderMap& headers) const PURE;
 
   /**
    * Factory method to create a shared instance of a matcher based on the rule defined.
@@ -34,7 +34,7 @@ public:
    * @return the matcher instance.
    */
   static MatcherConstPtr
-  create(const ::envoy::config::filter::http::jwt_authn::v2alpha::RequirementRule& rule);
+  create(const envoy::extensions::filters::http::jwt_authn::v3::RequirementRule& rule);
 };
 
 } // namespace JwtAuthn

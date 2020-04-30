@@ -5,9 +5,7 @@ py_binary(
     srcs = ["tap2pcap.py"],
     licenses = ["notice"],  # Apache 2
     visibility = ["//visibility:public"],
-    deps = [
-        "//envoy/data/tap/v2alpha:wrapper_py",
-    ],
+    deps = ["//envoy/data/tap/v2alpha:pkg_py_proto"],
 )
 
 py_test(
@@ -30,8 +28,8 @@ py_binary(
     licenses = ["notice"],  # Apache 2
     visibility = ["//visibility:public"],
     deps = [
-        "//envoy/api/v2:lds_py",
-        "//envoy/config/filter/network/http_connection_manager/v2:http_connection_manager_py",
+        "//envoy/api/v2:pkg_py_proto",
+        "//envoy/config/filter/network/http_connection_manager/v2:pkg_py_proto",
     ],
 )
 

@@ -8,12 +8,33 @@
 #include "absl/debugging/symbolize.h"
 
 #ifdef ENVOY_HANDLE_SIGNALS
-#include "exe/signal_action.h"
+#include "common/signal/signal_action.h"
 #endif
 
+#include "tools/cpp/runfiles/runfiles.h"
+
+#if defined(WIN32)
+static void NoopInvalidParameterHandler(const wchar_t* expression, const wchar_t* function,
+                                        const wchar_t* file, unsigned int line,
+                                        uintptr_t pReserved) {
+  return;
+}
+#endif
+
+using bazel::tools::cpp::runfiles::Runfiles;
 // The main entry point (and the rest of this file) should have no logic in it,
 // this allows overriding by site specific versions of main.cc.
 int main(int argc, char** argv) {
+#if defined(WIN32)
+  _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+
+  _set_invalid_parameter_handler(NoopInvalidParameterHandler);
+
+  WSADATA wsa_data;
+  const WORD version_requested = MAKEWORD(2, 2);
+  RELEASE_ASSERT(WSAStartup(version_requested, &wsa_data) == 0, "");
+#endif
+
 #ifndef __APPLE__
   absl::InitializeSymbolizer(argv[0]);
 #endif
@@ -21,12 +42,16 @@ int main(int argc, char** argv) {
   // Enabled by default. Control with "bazel --define=signal_trace=disabled"
   Envoy::SignalAction handle_sigs;
 #endif
-  Envoy::Thread::ThreadFactorySingleton::set(&Envoy::Thread::threadFactoryForTest());
 
-  Envoy::TestEnvironment::setEnvVar("TEST_RUNDIR",
-                                    (Envoy::TestEnvironment::getCheckedEnvVar("TEST_SRCDIR") + "/" +
-                                     Envoy::TestEnvironment::getCheckedEnvVar("TEST_WORKSPACE")),
-                                    1);
+  // Create a Runfiles object for runfiles lookup.
+  // https://github.com/bazelbuild/bazel/blob/master/tools/cpp/runfiles/runfiles_src.h#L32
+  std::string error;
+  std::unique_ptr<Runfiles> runfiles(Runfiles::Create(argv[0], &error));
+  RELEASE_ASSERT(Envoy::TestEnvironment::getOptionalEnvVar("NORUNFILES").has_value() ||
+                     runfiles != nullptr,
+                 error);
+
+  Envoy::TestEnvironment::setRunfiles(runfiles.get());
 
   // Select whether to test only for IPv4, IPv6, or both. The default is to
   // test for both. Options are {"v4only", "v6only", "all"}. Set

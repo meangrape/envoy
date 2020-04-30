@@ -25,10 +25,18 @@ public:
     InProgress,
     // Permission denied.
     Permission,
+    // Message too big to send.
+    MessageTooBig,
+    // Kernel interrupt.
+    Interrupt,
+    // Requested a nonexistent interface or a non-local source address.
+    AddressNotAvailable,
+    // Bad file descriptor.
+    BadFd,
     // Other error codes cannot be mapped to any one above in getErrorCode().
     UnknownError
   };
-  virtual ~IoError() {}
+  virtual ~IoError() = default;
 
   virtual IoErrorCode getErrorCode() const PURE;
   virtual std::string getErrorDetails() const PURE;
@@ -47,12 +55,12 @@ using IoErrorPtr = std::unique_ptr<IoError, IoErrorDeleterType>;
 template <typename ReturnValue> struct IoCallResult {
   IoCallResult(ReturnValue rc, IoErrorPtr err) : rc_(rc), err_(std::move(err)) {}
 
-  IoCallResult(IoCallResult<ReturnValue>&& result)
+  IoCallResult(IoCallResult<ReturnValue>&& result) noexcept
       : rc_(result.rc_), err_(std::move(result.err_)) {}
 
-  virtual ~IoCallResult() {}
+  virtual ~IoCallResult() = default;
 
-  IoCallResult& operator=(IoCallResult&& result) {
+  IoCallResult& operator=(IoCallResult&& result) noexcept {
     rc_ = result.rc_;
     err_ = std::move(result.err_);
     return *this;
@@ -68,6 +76,8 @@ template <typename ReturnValue> struct IoCallResult {
   IoErrorPtr err_;
 };
 
+using IoCallBoolResult = IoCallResult<bool>;
+using IoCallSizeResult = IoCallResult<ssize_t>;
 using IoCallUint64Result = IoCallResult<uint64_t>;
 
 inline Api::IoCallUint64Result ioCallUint64ResultNoError() {

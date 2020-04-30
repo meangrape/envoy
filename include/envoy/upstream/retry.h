@@ -1,5 +1,6 @@
 #pragma once
 
+#include "envoy/config/typed_config.h"
 #include "envoy/upstream/types.h"
 #include "envoy/upstream/upstream.h"
 
@@ -15,7 +16,7 @@ namespace Upstream {
  */
 class RetryPriority {
 public:
-  virtual ~RetryPriority() {}
+  virtual ~RetryPriority() = default;
 
   /**
    * Determines what PriorityLoad to use.
@@ -39,7 +40,7 @@ public:
   virtual void onHostAttempted(HostDescriptionConstSharedPtr attempted_host) PURE;
 };
 
-typedef std::shared_ptr<RetryPriority> RetryPrioritySharedPtr;
+using RetryPrioritySharedPtr = std::shared_ptr<RetryPriority>;
 
 /**
  * Used to decide whether a selected host should be rejected during retries. Host selection will be
@@ -51,7 +52,7 @@ typedef std::shared_ptr<RetryPriority> RetryPrioritySharedPtr;
  */
 class RetryHostPredicate {
 public:
-  virtual ~RetryHostPredicate() {}
+  virtual ~RetryHostPredicate() = default;
 
   /**
    * Determines whether a host should be rejected during host selection.
@@ -70,39 +71,34 @@ public:
   virtual void onHostAttempted(HostDescriptionConstSharedPtr attempted_host) PURE;
 };
 
-typedef std::shared_ptr<RetryHostPredicate> RetryHostPredicateSharedPtr;
+using RetryHostPredicateSharedPtr = std::shared_ptr<RetryHostPredicate>;
 
 /**
  * Factory for RetryPriority.
  */
-class RetryPriorityFactory {
+class RetryPriorityFactory : public Config::TypedFactory {
 public:
-  virtual ~RetryPriorityFactory() {}
+  ~RetryPriorityFactory() override = default;
 
-  virtual RetryPrioritySharedPtr createRetryPriority(const Protobuf::Message& config,
-                                                     uint32_t retry_count) PURE;
+  virtual RetryPrioritySharedPtr
+  createRetryPriority(const Protobuf::Message& config,
+                      ProtobufMessage::ValidationVisitor& validation_visitor,
+                      uint32_t retry_count) PURE;
 
-  virtual std::string name() const PURE;
-
-  virtual ProtobufTypes::MessagePtr createEmptyConfigProto() PURE;
+  std::string category() const override { return "envoy.retry_priorities"; }
 };
 
 /**
  * Factory for RetryHostPredicate.
  */
-class RetryHostPredicateFactory {
+class RetryHostPredicateFactory : public Config::TypedFactory {
 public:
-  virtual ~RetryHostPredicateFactory() {}
+  ~RetryHostPredicateFactory() override = default;
 
   virtual RetryHostPredicateSharedPtr createHostPredicate(const Protobuf::Message& config,
                                                           uint32_t retry_count) PURE;
 
-  /**
-   * @return name name of this factory.
-   */
-  virtual std::string name() PURE;
-
-  virtual ProtobufTypes::MessagePtr createEmptyConfigProto() PURE;
+  std::string category() const override { return "envoy.retry_host_predicates"; }
 };
 
 } // namespace Upstream

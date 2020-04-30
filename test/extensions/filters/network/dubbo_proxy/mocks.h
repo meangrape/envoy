@@ -1,5 +1,9 @@
 #pragma once
 
+#include "common/protobuf/protobuf.h"
+#include "common/protobuf/utility.h"
+
+#include "extensions/filters/network/dubbo_proxy/decoder.h"
 #include "extensions/filters/network/dubbo_proxy/decoder_event_handler.h"
 #include "extensions/filters/network/dubbo_proxy/filters/factory_base.h"
 #include "extensions/filters/network/dubbo_proxy/filters/filter.h"
@@ -12,67 +16,134 @@
 
 #include "gmock/gmock.h"
 
-using testing::_;
-
 namespace Envoy {
 namespace Extensions {
 namespace NetworkFilters {
 namespace DubboProxy {
 
-class MockDecoderEventHandler : public DecoderEventHandler {
+class MockStreamDecoder : public StreamDecoder {
 public:
-  MockDecoderEventHandler();
+  MockStreamDecoder();
 
-  MOCK_METHOD0(transportBegin, Network::FilterStatus());
-  MOCK_METHOD0(transportEnd, Network::FilterStatus());
-  MOCK_METHOD3(messageBegin, Network::FilterStatus(MessageType, int64_t, SerializationType));
-  MOCK_METHOD1(messageEnd, Network::FilterStatus(MessageMetadataSharedPtr));
-  MOCK_METHOD2(transferHeaderTo, Network::FilterStatus(Buffer::Instance&, size_t));
-  MOCK_METHOD2(transferBodyTo, Network::FilterStatus(Buffer::Instance&, size_t));
+  MOCK_METHOD(FilterStatus, onMessageDecoded, (MessageMetadataSharedPtr, ContextSharedPtr));
 };
 
-class MockProtocolCallbacks : public ProtocolCallbacks {
+class MockStreamEncoder : public StreamEncoder {
 public:
-  MockProtocolCallbacks();
-  ~MockProtocolCallbacks();
+  MockStreamEncoder();
 
-  void onRequestMessage(RequestMessagePtr&& req) override { onRequestMessageRvr(req.get()); }
-  void onResponseMessage(ResponseMessagePtr&& res) override { onResponseMessageRvr(res.get()); }
+  MOCK_METHOD(FilterStatus, onMessageEncoded, (MessageMetadataSharedPtr, ContextSharedPtr));
+};
 
-  // DubboProxy::ProtocolCallbacks
-  MOCK_METHOD1(onRequestMessageRvr, void(RequestMessage*));
-  MOCK_METHOD1(onResponseMessageRvr, void(ResponseMessage*));
+class MockStreamHandler : public StreamHandler {
+public:
+  MockStreamHandler() = default;
+
+  MOCK_METHOD(void, onStreamDecoded, (MessageMetadataSharedPtr, ContextSharedPtr));
+};
+
+class MockRequestDecoderCallbacks : public RequestDecoderCallbacks {
+public:
+  MockRequestDecoderCallbacks();
+  ~MockRequestDecoderCallbacks() override = default;
+
+  MOCK_METHOD(StreamHandler&, newStream, ());
+  MOCK_METHOD(void, onHeartbeat, (MessageMetadataSharedPtr));
+
+  MockStreamHandler handler_;
+};
+class MockResponseDecoderCallbacks : public ResponseDecoderCallbacks {
+public:
+  MockResponseDecoderCallbacks();
+  ~MockResponseDecoderCallbacks() override = default;
+
+  MOCK_METHOD(StreamHandler&, newStream, ());
+  MOCK_METHOD(void, onHeartbeat, (MessageMetadataSharedPtr));
+
+  MockStreamHandler handler_;
+};
+
+class MockActiveStream : public ActiveStream {
+public:
+  MockActiveStream(StreamHandler& handler, MessageMetadataSharedPtr metadata,
+                   ContextSharedPtr context)
+      : ActiveStream(handler, metadata, context) {}
+  ~MockActiveStream() = default;
+
+  MOCK_METHOD(ActiveStream*, newStream, (MessageMetadataSharedPtr, ContextSharedPtr));
+  MOCK_METHOD(void, onHeartbeat, (MessageMetadataSharedPtr));
+};
+
+class MockDecoderStateMachineDelegate : public DecoderStateMachine::Delegate {
+public:
+  MockDecoderStateMachineDelegate() = default;
+  ~MockDecoderStateMachineDelegate() override = default;
+
+  MOCK_METHOD(ActiveStream*, newStream, (MessageMetadataSharedPtr, ContextSharedPtr));
+  MOCK_METHOD(void, onHeartbeat, (MessageMetadataSharedPtr));
+};
+
+class MockSerializer : public Serializer {
+public:
+  MockSerializer();
+  ~MockSerializer() override;
+
+  // DubboProxy::Serializer
+  MOCK_METHOD(const std::string&, name, (), (const));
+  MOCK_METHOD(SerializationType, type, (), (const));
+  MOCK_METHOD((std::pair<RpcInvocationSharedPtr, bool>), deserializeRpcInvocation,
+              (Buffer::Instance&, ContextSharedPtr));
+  MOCK_METHOD((std::pair<RpcResultSharedPtr, bool>), deserializeRpcResult,
+              (Buffer::Instance&, ContextSharedPtr));
+  MOCK_METHOD(size_t, serializeRpcResult, (Buffer::Instance&, const std::string&, RpcResponseType));
+
+  std::string name_{"mockDeserializer"};
+  SerializationType type_{SerializationType::Hessian2};
 };
 
 class MockProtocol : public Protocol {
 public:
   MockProtocol();
-  ~MockProtocol();
+  ~MockProtocol() override;
 
-  MOCK_CONST_METHOD0(name, const std::string&());
-  MOCK_CONST_METHOD0(type, ProtocolType());
-  MOCK_METHOD2(decode, bool(Buffer::Instance&, Context*));
-  MOCK_METHOD3(decode, bool(Buffer::Instance&, Protocol::Context*, MessageMetadataSharedPtr));
-  MOCK_METHOD3(encode, bool(Buffer::Instance&, int32_t, const MessageMetadata&));
+  MOCK_METHOD(const std::string&, name, (), (const));
+  MOCK_METHOD(ProtocolType, type, (), (const));
+  MOCK_METHOD(Serializer*, serializer, (), (const));
+  MOCK_METHOD((std::pair<ContextSharedPtr, bool>), decodeHeader,
+              (Buffer::Instance&, MessageMetadataSharedPtr));
+  MOCK_METHOD(bool, decodeData, (Buffer::Instance&, ContextSharedPtr, MessageMetadataSharedPtr));
+  MOCK_METHOD(bool, encode,
+              (Buffer::Instance&, const MessageMetadata&, const std::string&, RpcResponseType));
 
   std::string name_{"MockProtocol"};
   ProtocolType type_{ProtocolType::Dubbo};
+  NiceMock<MockSerializer> serializer_;
 };
 
-class MockDeserializer : public Deserializer {
+class MockNamedSerializerConfigFactory : public NamedSerializerConfigFactory {
 public:
-  MockDeserializer();
-  ~MockDeserializer();
+  MockNamedSerializerConfigFactory(std::function<MockSerializer*()> f) : f_(f) {}
 
-  // DubboProxy::Deserializer
-  MOCK_CONST_METHOD0(name, const std::string&());
-  MOCK_CONST_METHOD0(type, SerializationType());
-  MOCK_METHOD2(deserializeRpcInvocation, RpcInvocationPtr(Buffer::Instance&, size_t));
-  MOCK_METHOD2(deserializeRpcResult, RpcResultPtr(Buffer::Instance&, size_t));
-  MOCK_METHOD3(serializeRpcResult, size_t(Buffer::Instance&, const std::string&, RpcResponseType));
+  SerializerPtr createSerializer() override { return SerializerPtr{f_()}; }
+  std::string name() const override {
+    return SerializerNames::get().fromType(SerializationType::Hessian2);
+  }
 
-  std::string name_{"mockDeserializer"};
-  SerializationType type_{SerializationType::Hessian};
+  std::function<MockSerializer*()> f_;
+};
+
+class MockNamedProtocolConfigFactory : public NamedProtocolConfigFactory {
+public:
+  MockNamedProtocolConfigFactory(std::function<MockProtocol*()> f) : f_(f) {}
+
+  ProtocolPtr createProtocol(SerializationType serialization_type) override {
+    auto protocol = ProtocolPtr{f_()};
+    protocol->initSerializer(serialization_type);
+    return protocol;
+  }
+  std::string name() const override { return ProtocolNames::get().fromType(ProtocolType::Dubbo); }
+
+  std::function<MockProtocol*()> f_;
 };
 
 namespace Router {
@@ -81,65 +152,125 @@ class MockRoute;
 
 namespace DubboFilters {
 
+class MockFilterChainFactory : public FilterChainFactory {
+public:
+  MockFilterChainFactory();
+  ~MockFilterChainFactory() override;
+
+  MOCK_METHOD(void, createFilterChain, (DubboFilters::FilterChainFactoryCallbacks & callbacks));
+};
+
 class MockFilterChainFactoryCallbacks : public FilterChainFactoryCallbacks {
 public:
   MockFilterChainFactoryCallbacks();
-  ~MockFilterChainFactoryCallbacks();
+  ~MockFilterChainFactoryCallbacks() override;
 
-  MOCK_METHOD1(addDecoderFilter, void(DecoderFilterSharedPtr));
+  MOCK_METHOD(void, addDecoderFilter, (DecoderFilterSharedPtr));
+  MOCK_METHOD(void, addEncoderFilter, (EncoderFilterSharedPtr));
+  MOCK_METHOD(void, addFilter, (CodecFilterSharedPtr));
 };
 
 class MockDecoderFilter : public DecoderFilter {
 public:
   MockDecoderFilter();
-  ~MockDecoderFilter();
+  ~MockDecoderFilter() override;
 
   // DubboProxy::DubboFilters::DecoderFilter
-  MOCK_METHOD0(onDestroy, void());
-  MOCK_METHOD1(setDecoderFilterCallbacks, void(DecoderFilterCallbacks& callbacks));
+  MOCK_METHOD(void, onDestroy, ());
+  MOCK_METHOD(void, setDecoderFilterCallbacks, (DecoderFilterCallbacks & callbacks));
+  MOCK_METHOD(FilterStatus, onMessageDecoded, (MessageMetadataSharedPtr, ContextSharedPtr));
 
-  // DubboProxy::DecoderEventHandler
-  MOCK_METHOD0(transportBegin, Network::FilterStatus());
-  MOCK_METHOD0(transportEnd, Network::FilterStatus());
-  MOCK_METHOD3(messageBegin, Network::FilterStatus(MessageType, int64_t, SerializationType));
-  MOCK_METHOD1(messageEnd, Network::FilterStatus(MessageMetadataSharedPtr));
-  MOCK_METHOD2(transferHeaderTo, Network::FilterStatus(Buffer::Instance& buf, size_t size));
-  MOCK_METHOD2(transferBodyTo, Network::FilterStatus(Buffer::Instance& buf, size_t size));
+  DecoderFilterCallbacks* callbacks_{};
 };
 
 class MockDecoderFilterCallbacks : public DecoderFilterCallbacks {
 public:
   MockDecoderFilterCallbacks();
-  ~MockDecoderFilterCallbacks();
+  ~MockDecoderFilterCallbacks() override;
 
   // DubboProxy::DubboFilters::DecoderFilterCallbacks
-  MOCK_CONST_METHOD0(requestId, uint64_t());
-  MOCK_CONST_METHOD0(streamId, uint64_t());
-  MOCK_CONST_METHOD0(connection, const Network::Connection*());
-  MOCK_METHOD0(continueDecoding, void());
-  MOCK_METHOD0(route, Router::RouteConstSharedPtr());
-  MOCK_CONST_METHOD0(downstreamSerializationType, SerializationType());
-  MOCK_CONST_METHOD0(downstreamProtocolType, ProtocolType());
-  MOCK_METHOD2(sendLocalReply, void(const DirectResponse&, bool));
-  MOCK_METHOD2(startUpstreamResponse, void(Deserializer&, Protocol&));
-  MOCK_METHOD1(upstreamData, UpstreamResponseStatus(Buffer::Instance&));
-  MOCK_METHOD0(resetDownstreamConnection, void());
-  MOCK_METHOD0(streamInfo, StreamInfo::StreamInfo&());
-  MOCK_METHOD0(resetStream, void());
+  MOCK_METHOD(uint64_t, requestId, (), (const));
+  MOCK_METHOD(uint64_t, streamId, (), (const));
+  MOCK_METHOD(const Network::Connection*, connection, (), (const));
+  MOCK_METHOD(void, continueDecoding, ());
+  MOCK_METHOD(Router::RouteConstSharedPtr, route, ());
+  MOCK_METHOD(SerializationType, serializationType, (), (const));
+  MOCK_METHOD(ProtocolType, protocolType, (), (const));
+  MOCK_METHOD(void, sendLocalReply, (const DirectResponse&, bool));
+  MOCK_METHOD(void, startUpstreamResponse, ());
+  MOCK_METHOD(UpstreamResponseStatus, upstreamData, (Buffer::Instance&));
+  MOCK_METHOD(void, resetDownstreamConnection, ());
+  MOCK_METHOD(StreamInfo::StreamInfo&, streamInfo, ());
+  MOCK_METHOD(void, resetStream, ());
+  MOCK_METHOD(Event::Dispatcher&, dispatcher, ());
 
   uint64_t stream_id_{1};
   NiceMock<Network::MockConnection> connection_;
   NiceMock<StreamInfo::MockStreamInfo> stream_info_;
   std::shared_ptr<Router::MockRoute> route_;
+  NiceMock<Event::MockDispatcher> dispatcher_;
+};
+
+class MockEncoderFilter : public EncoderFilter {
+public:
+  MockEncoderFilter();
+  ~MockEncoderFilter() override;
+
+  // DubboProxy::DubboFilters::EncoderFilter
+  MOCK_METHOD(void, onDestroy, ());
+  MOCK_METHOD(void, setEncoderFilterCallbacks, (EncoderFilterCallbacks & callbacks));
+  MOCK_METHOD(FilterStatus, onMessageEncoded, (MessageMetadataSharedPtr, ContextSharedPtr));
+
+  EncoderFilterCallbacks* callbacks_{};
+};
+
+class MockEncoderFilterCallbacks : public EncoderFilterCallbacks {
+public:
+  MockEncoderFilterCallbacks();
+  ~MockEncoderFilterCallbacks() override;
+
+  // DubboProxy::DubboFilters::MockEncoderFilterCallbacks
+  MOCK_METHOD(uint64_t, requestId, (), (const));
+  MOCK_METHOD(uint64_t, streamId, (), (const));
+  MOCK_METHOD(const Network::Connection*, connection, (), (const));
+  MOCK_METHOD(Router::RouteConstSharedPtr, route, ());
+  MOCK_METHOD(SerializationType, serializationType, (), (const));
+  MOCK_METHOD(ProtocolType, protocolType, (), (const));
+  MOCK_METHOD(StreamInfo::StreamInfo&, streamInfo, ());
+  MOCK_METHOD(void, resetStream, ());
+  MOCK_METHOD(Event::Dispatcher&, dispatcher, ());
+  MOCK_METHOD(void, continueEncoding, ());
+  MOCK_METHOD(void, continueDecoding, ());
+
+  uint64_t stream_id_{1};
+  NiceMock<Network::MockConnection> connection_;
+  NiceMock<StreamInfo::MockStreamInfo> stream_info_;
+  std::shared_ptr<Router::MockRoute> route_;
+  NiceMock<Event::MockDispatcher> dispatcher_;
+};
+
+class MockCodecFilter : public CodecFilter {
+public:
+  MockCodecFilter();
+  ~MockCodecFilter() override;
+
+  MOCK_METHOD(void, onDestroy, ());
+  MOCK_METHOD(void, setEncoderFilterCallbacks, (EncoderFilterCallbacks & callbacks));
+  MOCK_METHOD(FilterStatus, onMessageEncoded, (MessageMetadataSharedPtr, ContextSharedPtr));
+  MOCK_METHOD(void, setDecoderFilterCallbacks, (DecoderFilterCallbacks & callbacks));
+  MOCK_METHOD(FilterStatus, onMessageDecoded, (MessageMetadataSharedPtr, ContextSharedPtr));
+
+  DecoderFilterCallbacks* decoder_callbacks_{};
+  EncoderFilterCallbacks* encoder_callbacks_{};
 };
 
 class MockDirectResponse : public DirectResponse {
 public:
-  MockDirectResponse();
-  ~MockDirectResponse();
+  MockDirectResponse() = default;
+  ~MockDirectResponse() override = default;
 
-  MOCK_CONST_METHOD4(encode, DirectResponse::ResponseType(MessageMetadata&, Protocol&,
-                                                          Deserializer&, Buffer::Instance&));
+  MOCK_METHOD(DirectResponse::ResponseType, encode,
+              (MessageMetadata&, Protocol&, Buffer::Instance&), (const));
 };
 
 template <class ConfigProto> class MockFactoryBase : public NamedDubboFilterConfigFactory {
@@ -156,7 +287,7 @@ public:
     return std::make_unique<ConfigProto>();
   }
 
-  std::string name() override { return name_; }
+  std::string name() const override { return name_; }
 
 protected:
   MockFactoryBase(const std::string& name) : name_(name) {}
@@ -173,7 +304,7 @@ private:
 class MockFilterConfigFactory : public MockFactoryBase<ProtobufWkt::Struct> {
 public:
   MockFilterConfigFactory();
-  ~MockFilterConfigFactory();
+  ~MockFilterConfigFactory() override;
 
   DubboFilters::FilterFactoryCb
   createFilterFactoryFromProtoTyped(const ProtobufWkt::Struct& proto_config,
@@ -192,11 +323,11 @@ namespace Router {
 class MockRouteEntry : public RouteEntry {
 public:
   MockRouteEntry();
-  ~MockRouteEntry();
+  ~MockRouteEntry() override;
 
   // DubboProxy::Router::RouteEntry
-  MOCK_CONST_METHOD0(clusterName, const std::string&());
-  MOCK_CONST_METHOD0(metadataMatchCriteria, const Envoy::Router::MetadataMatchCriteria*());
+  MOCK_METHOD(const std::string&, clusterName, (), (const));
+  MOCK_METHOD(const Envoy::Router::MetadataMatchCriteria*, metadataMatchCriteria, (), (const));
 
   std::string cluster_name_{"fake_cluster"};
 };
@@ -204,10 +335,10 @@ public:
 class MockRoute : public Route {
 public:
   MockRoute();
-  ~MockRoute();
+  ~MockRoute() override;
 
   // DubboProxy::Router::Route
-  MOCK_CONST_METHOD0(routeEntry, const RouteEntry*());
+  MOCK_METHOD(const RouteEntry*, routeEntry, (), (const));
 
   NiceMock<MockRouteEntry> route_entry_;
 };

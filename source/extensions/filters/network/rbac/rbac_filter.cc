@@ -1,9 +1,12 @@
 #include "extensions/filters/network/rbac/rbac_filter.h"
 
 #include "envoy/buffer/buffer.h"
+#include "envoy/extensions/filters/network/rbac/v3/rbac.pb.h"
 #include "envoy/network/connection.h"
 
 #include "extensions/filters/network/well_known_names.h"
+
+#include "absl/strings/str_join.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -11,30 +14,35 @@ namespace NetworkFilters {
 namespace RBACFilter {
 
 RoleBasedAccessControlFilterConfig::RoleBasedAccessControlFilterConfig(
-    const envoy::config::filter::network::rbac::v2::RBAC& proto_config, Stats::Scope& scope)
+    const envoy::extensions::filters::network::rbac::v3::RBAC& proto_config, Stats::Scope& scope)
     : stats_(Filters::Common::RBAC::generateStats(proto_config.stat_prefix(), scope)),
       engine_(Filters::Common::RBAC::createEngine(proto_config)),
       shadow_engine_(Filters::Common::RBAC::createShadowEngine(proto_config)),
       enforcement_type_(proto_config.enforcement_type()) {}
 
 Network::FilterStatus RoleBasedAccessControlFilter::onData(Buffer::Instance&, bool) {
-  ENVOY_LOG(
-      debug,
-      "checking connection: requestedServerName: {}, remoteAddress: {}, localAddress: {}, ssl: {}, "
-      "dynamicMetadata: {}",
-      callbacks_->connection().requestedServerName(),
-      callbacks_->connection().remoteAddress()->asString(),
-      callbacks_->connection().localAddress()->asString(),
-      callbacks_->connection().ssl()
-          ? "uriSanPeerCertificate: " + callbacks_->connection().ssl()->uriSanPeerCertificate() +
-                ", subjectPeerCertificate: " +
-                callbacks_->connection().ssl()->subjectPeerCertificate()
-          : "none",
-      callbacks_->connection().streamInfo().dynamicMetadata().DebugString());
+  ENVOY_LOG(debug,
+            "checking connection: requestedServerName: {}, sourceIP: {}, directRemoteIP: {},"
+            "remoteIP: {}, localAddress: {}, ssl: {}, dynamicMetadata: {}",
+            callbacks_->connection().requestedServerName(),
+            callbacks_->connection().remoteAddress()->asString(),
+            callbacks_->connection().streamInfo().downstreamDirectRemoteAddress()->asString(),
+            callbacks_->connection().streamInfo().downstreamRemoteAddress()->asString(),
+            callbacks_->connection().streamInfo().downstreamLocalAddress()->asString(),
+            callbacks_->connection().ssl()
+                ? "uriSanPeerCertificate: " +
+                      absl::StrJoin(callbacks_->connection().ssl()->uriSanPeerCertificate(), ",") +
+                      ", dnsSanPeerCertificate: " +
+                      absl::StrJoin(callbacks_->connection().ssl()->dnsSansPeerCertificate(), ",") +
+                      ", subjectPeerCertificate: " +
+                      callbacks_->connection().ssl()->subjectPeerCertificate()
+                : "none",
+            callbacks_->connection().streamInfo().dynamicMetadata().DebugString());
 
   // When the enforcement type is continuous always do the RBAC checks. If it is a one time check,
   // run the check once and skip it for subsequent onData calls.
-  if (config_->enforcementType() == envoy::config::filter::network::rbac::v2::RBAC::CONTINUOUS) {
+  if (config_->enforcementType() ==
+      envoy::extensions::filters::network::rbac::v3::RBAC::CONTINUOUS) {
     shadow_engine_result_ = checkEngine(Filters::Common::RBAC::EnforcementMode::Shadow);
     engine_result_ = checkEngine(Filters::Common::RBAC::EnforcementMode::Enforced);
   } else {
@@ -74,11 +82,10 @@ void RoleBasedAccessControlFilter::setDynamicMetadata(std::string shadow_engine_
 
 EngineResult
 RoleBasedAccessControlFilter::checkEngine(Filters::Common::RBAC::EnforcementMode mode) {
-  const auto& engine = config_->engine(mode);
-  if (engine.has_value()) {
+  const auto engine = config_->engine(mode);
+  if (engine != nullptr) {
     std::string effective_policy_id;
-    if (engine->allowed(callbacks_->connection(),
-                        callbacks_->connection().streamInfo().dynamicMetadata(),
+    if (engine->allowed(callbacks_->connection(), callbacks_->connection().streamInfo(),
                         &effective_policy_id)) {
       if (mode == Filters::Common::RBAC::EnforcementMode::Shadow) {
         ENVOY_LOG(debug, "shadow allowed");

@@ -6,8 +6,9 @@
 #include <vector>
 
 #include "envoy/api/api.h"
-#include "envoy/config/overload/v2alpha/overload.pb.validate.h"
+#include "envoy/config/overload/v3/overload.pb.h"
 #include "envoy/event/dispatcher.h"
+#include "envoy/protobuf/message_validator.h"
 #include "envoy/server/overload_manager.h"
 #include "envoy/server/resource_monitor.h"
 #include "envoy/stats/scope.h"
@@ -21,7 +22,7 @@ namespace Server {
 
 class OverloadAction {
 public:
-  OverloadAction(const envoy::config::overload::v2alpha::OverloadAction& config,
+  OverloadAction(const envoy::config::overload::v3::OverloadAction& config,
                  Stats::Scope& stats_scope);
 
   // Updates the current pressure for the given resource and returns whether the action
@@ -33,7 +34,7 @@ public:
 
   class Trigger {
   public:
-    virtual ~Trigger() {}
+    virtual ~Trigger() = default;
 
     // Updates the current value of the metric and returns whether the trigger has changed state.
     virtual bool updateValue(double value) PURE;
@@ -41,7 +42,7 @@ public:
     // Returns whether the trigger is currently fired or not.
     virtual bool isFired() const PURE;
   };
-  typedef std::unique_ptr<Trigger> TriggerPtr;
+  using TriggerPtr = std::unique_ptr<Trigger>;
 
 private:
   std::unordered_map<std::string, TriggerPtr> triggers_;
@@ -53,8 +54,8 @@ class OverloadManagerImpl : Logger::Loggable<Logger::Id::main>, public OverloadM
 public:
   OverloadManagerImpl(Event::Dispatcher& dispatcher, Stats::Scope& stats_scope,
                       ThreadLocal::SlotAllocator& slot_allocator,
-                      const envoy::config::overload::v2alpha::OverloadManager& config,
-                      Api::Api& api);
+                      const envoy::config::overload::v3::OverloadManager& config,
+                      ProtobufMessage::ValidationVisitor& validation_visitor, Api::Api& api);
 
   // Server::OverloadManager
   void start() override;
@@ -106,10 +107,10 @@ private:
   std::unordered_map<std::string, Resource> resources_;
   std::unordered_map<std::string, OverloadAction> actions_;
 
-  typedef std::unordered_multimap<std::string, std::string> ResourceToActionMap;
+  using ResourceToActionMap = std::unordered_multimap<std::string, std::string>;
   ResourceToActionMap resource_to_actions_;
 
-  typedef std::unordered_multimap<std::string, ActionCallback> ActionToCallbackMap;
+  using ActionToCallbackMap = std::unordered_multimap<std::string, ActionCallback>;
   ActionToCallbackMap action_to_callbacks_;
 };
 

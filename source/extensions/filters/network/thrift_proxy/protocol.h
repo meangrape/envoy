@@ -5,6 +5,7 @@
 
 #include "envoy/buffer/buffer.h"
 #include "envoy/common/pure.h"
+#include "envoy/config/typed_config.h"
 #include "envoy/registry/registry.h"
 
 #include "common/common/assert.h"
@@ -26,7 +27,7 @@ namespace NetworkFilters {
 namespace ThriftProxy {
 
 class DirectResponse;
-typedef std::unique_ptr<DirectResponse> DirectResponsePtr;
+using DirectResponsePtr = std::unique_ptr<DirectResponse>;
 
 /**
  * Protocol represents the operations necessary to implement the a generic Thrift protocol.
@@ -34,7 +35,7 @@ typedef std::unique_ptr<DirectResponse> DirectResponsePtr;
  */
 class Protocol {
 public:
-  virtual ~Protocol() {}
+  virtual ~Protocol() = default;
 
   /**
    * @return const std::string& the human-readable name of the protocol
@@ -462,14 +463,14 @@ public:
   }
 };
 
-typedef std::unique_ptr<Protocol> ProtocolPtr;
+using ProtocolPtr = std::unique_ptr<Protocol>;
 
 /**
  * A DirectResponse manipulates a Protocol to directly create a Thrift response message.
  */
 class DirectResponse {
 public:
-  virtual ~DirectResponse() {}
+  virtual ~DirectResponse() = default;
 
   enum class ResponseType {
     // DirectResponse encodes MessageType::Reply with success payload
@@ -498,9 +499,9 @@ public:
  * Implemented by each Thrift protocol and registered via Registry::registerFactory or the
  * convenience class RegisterFactory.
  */
-class NamedProtocolConfigFactory {
+class NamedProtocolConfigFactory : public Config::UntypedFactory {
 public:
-  virtual ~NamedProtocolConfigFactory() {}
+  ~NamedProtocolConfigFactory() override = default;
 
   /**
    * Create a particular Thrift protocol
@@ -508,11 +509,7 @@ public:
    */
   virtual ProtocolPtr createProtocol() PURE;
 
-  /**
-   * @return std::string the identifying name for a particular implementation of thrift protocol
-   * produced by the factory.
-   */
-  virtual std::string name() PURE;
+  std::string category() const override { return "envoy.thrift_proxy.protocols"; }
 
   /**
    * Convenience method to lookup a factory by type.
@@ -521,7 +518,7 @@ public:
    */
   static NamedProtocolConfigFactory& getFactory(ProtocolType type) {
     const std::string& name = ProtocolNames::get().fromType(type);
-    return Envoy::Config::Utility::getAndCheckFactory<NamedProtocolConfigFactory>(name);
+    return Envoy::Config::Utility::getAndCheckFactoryByName<NamedProtocolConfigFactory>(name);
   }
 };
 
@@ -529,9 +526,10 @@ public:
  * ProtocolFactoryBase provides a template for a trivial NamedProtocolConfigFactory.
  */
 template <class ProtocolImpl> class ProtocolFactoryBase : public NamedProtocolConfigFactory {
+public:
   ProtocolPtr createProtocol() override { return std::move(std::make_unique<ProtocolImpl>()); }
 
-  std::string name() override { return name_; }
+  std::string name() const override { return name_; }
 
 protected:
   ProtocolFactoryBase(const std::string& name) : name_(name) {}

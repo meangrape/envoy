@@ -1,12 +1,16 @@
 #pragma once
 
 #include <array>
+#include <chrono>
+#include <functional>
 #include <string>
 #include <vector>
 
 #include "envoy/common/pure.h"
 #include "envoy/ssl/certificate_validation_context_config.h"
 #include "envoy/ssl/tls_certificate_config.h"
+
+#include "absl/types/optional.h"
 
 namespace Envoy {
 namespace Ssl {
@@ -16,7 +20,7 @@ namespace Ssl {
  */
 class ContextConfig {
 public:
-  virtual ~ContextConfig() {}
+  virtual ~ContextConfig() = default;
 
   /**
    * The list of supported protocols exposed via ALPN. Client connections will send these
@@ -98,7 +102,7 @@ public:
   virtual const std::string& signingAlgorithmsForTest() const PURE;
 };
 
-typedef std::unique_ptr<ClientContextConfig> ClientContextConfigPtr;
+using ClientContextConfigPtr = std::unique_ptr<ClientContextConfig>;
 
 class ServerContextConfig : public virtual ContextConfig {
 public:
@@ -119,9 +123,20 @@ public:
    * are candidates for decrypting received tickets.
    */
   virtual const std::vector<SessionTicketKey>& sessionTicketKeys() const PURE;
+
+  /**
+   * @return timeout in seconds for the session.
+   * Session timeout is used to specify lifetime hint of tls tickets.
+   */
+  virtual absl::optional<std::chrono::seconds> sessionTimeout() const PURE;
+
+  /**
+   * @return True if stateless TLS session resumption is disabled, false otherwise.
+   */
+  virtual bool disableStatelessSessionResumption() const PURE;
 };
 
-typedef std::unique_ptr<ServerContextConfig> ServerContextConfigPtr;
+using ServerContextConfigPtr = std::unique_ptr<ServerContextConfig>;
 
 } // namespace Ssl
 } // namespace Envoy

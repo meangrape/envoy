@@ -5,7 +5,11 @@
 #include "common/event/libevent.h"
 #include "common/http/http2/codec_impl.h"
 
+#include "exe/process_wide.h"
+
 #include "test/test_common/environment.h"
+
+#include "gmock/gmock.h"
 
 namespace Envoy {
 namespace Fuzz {
@@ -24,9 +28,9 @@ PerTestEnvironment::PerTestEnvironment()
 PerTestEnvironment::~PerTestEnvironment() { TestEnvironment::removePath(test_tmpdir_); }
 
 void Runner::setupEnvironment(int argc, char** argv, spdlog::level::level_enum default_log_level) {
-  Event::Libevent::Global::initialize();
-  Http::Http2::initializeNghttp2Logging();
-
+  // We hold on to process_wide to provide RAII cleanup of process-wide
+  // state.
+  ProcessWide process_wide;
   TestEnvironment::initializeOptions(argc, argv);
 
   const auto environment_log_level = TestEnvironment::getOptions().logLevel();
@@ -41,14 +45,20 @@ void Runner::setupEnvironment(int argc, char** argv, spdlog::level::level_enum d
   // https://github.com/llvm-mirror/compiler-rt/blob/master/lib/fuzzer/FuzzerInterface.h).
   static auto* lock = new Thread::MutexBasicLockable();
   static auto* logging_context =
-      new Logger::Context(log_level_, TestEnvironment::getOptions().logFormat(), *lock);
+      new Logger::Context(log_level_, TestEnvironment::getOptions().logFormat(), *lock, false);
   UNREFERENCED_PARAMETER(logging_context);
 }
 
 } // namespace Fuzz
 } // namespace Envoy
 
-extern "C" int LLVMFuzzerInitialize(int* /*argc*/, char*** argv) {
+// LLVMFuzzerInitialize() is called by LibFuzzer once before fuzzing starts.
+// NOLINTNEXTLINE(readability-identifier-naming)
+extern "C" int LLVMFuzzerInitialize(int* argc, char*** argv) {
+  // Before parsing gmock flags, set the default value of flag --gmock_verbose to "error".
+  // This suppresses logs from NiceMock objects, which can be noisy and provide little value.
+  testing::GMOCK_FLAG(verbose) = "error";
+  testing::InitGoogleMock(argc, *argv);
   Envoy::Fuzz::Runner::setupEnvironment(1, *argv, spdlog::level::critical);
   return 0;
 }

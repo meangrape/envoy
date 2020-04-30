@@ -4,6 +4,7 @@
 #include <unordered_map>
 
 #include "envoy/common/time.h"
+#include "envoy/extensions/filters/http/jwt_authn/v3/config.pb.h"
 
 #include "common/common/logger.h"
 #include "common/config/datasource.h"
@@ -11,8 +12,8 @@
 
 #include "jwt_verify_lib/check_audience.h"
 
-using ::envoy::config::filter::http::jwt_authn::v2alpha::JwtAuthentication;
-using ::envoy::config::filter::http::jwt_authn::v2alpha::JwtProvider;
+using envoy::extensions::filters::http::jwt_authn::v3::JwtAuthentication;
+using envoy::extensions::filters::http::jwt_authn::v3::JwtProvider;
 using ::google::jwt_verify::Jwks;
 using ::google::jwt_verify::Status;
 
@@ -25,7 +26,7 @@ namespace {
 // Default cache expiration time in 5 minutes.
 constexpr int PubkeyCacheExpirationSec = 600;
 
-class JwksDataImpl : public JwksCache::JwksData, public Logger::Loggable<Logger::Id::filter> {
+class JwksDataImpl : public JwksCache::JwksData, public Logger::Loggable<Logger::Id::jwt> {
 public:
   JwksDataImpl(const JwtProvider& jwt_provider, TimeSource& time_source, Api::Api& api)
       : jwt_provider_(jwt_provider), time_source_(time_source) {
@@ -131,9 +132,9 @@ private:
 
 } // namespace
 
-JwksCachePtr JwksCache::create(
-    const ::envoy::config::filter::http::jwt_authn::v2alpha::JwtAuthentication& config,
-    TimeSource& time_source, Api::Api& api) {
+JwksCachePtr
+JwksCache::create(const envoy::extensions::filters::http::jwt_authn::v3::JwtAuthentication& config,
+                  TimeSource& time_source, Api::Api& api) {
   return JwksCachePtr(new JwksCacheImpl(config, time_source, api));
 }
 

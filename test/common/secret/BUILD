@@ -14,6 +14,7 @@ envoy_cc_test(
     data = [
         "//test/extensions/transport_sockets/tls/test_data:certs",
     ],
+    tags = ["fails_on_windows"],
     deps = [
         "//source/common/secret:sds_api_lib",
         "//source/common/secret:secret_manager_impl_lib",
@@ -22,7 +23,12 @@ envoy_cc_test(
         "//test/mocks/server:server_mocks",
         "//test/test_common:environment_lib",
         "//test/test_common:registry_lib",
+        "//test/test_common:simulated_time_system_lib",
         "//test/test_common:utility_lib",
+        "@envoy_api//envoy/admin/v3:pkg_cc_proto",
+        "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
+        "@envoy_api//envoy/config/grpc_credential/v2alpha:pkg_cc_proto",
+        "@envoy_api//envoy/extensions/transport_sockets/tls/v3:pkg_cc_proto",
     ],
 )
 
@@ -38,11 +44,15 @@ envoy_cc_test(
         "//source/common/ssl:tls_certificate_config_impl_lib",
         "//test/mocks/grpc:grpc_mocks",
         "//test/mocks/init:init_mocks",
+        "//test/mocks/protobuf:protobuf_mocks",
         "//test/mocks/secret:secret_mocks",
         "//test/mocks/server:server_mocks",
         "//test/test_common:environment_lib",
         "//test/test_common:registry_lib",
         "//test/test_common:utility_lib",
-        "@envoy_api//envoy/service/discovery/v2:sds_cc",
+        "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
+        "@envoy_api//envoy/extensions/transport_sockets/tls/v3:pkg_cc_proto",
+        "@envoy_api//envoy/service/discovery/v3:pkg_cc_proto",
+        "@envoy_api//envoy/service/secret/v3:pkg_cc_proto",
     ],
 )

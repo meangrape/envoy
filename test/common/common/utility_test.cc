@@ -8,6 +8,7 @@
 
 #include "common/common/utility.h"
 
+#include "test/test_common/simulated_time_system.h"
 #include "test/test_common/test_time.h"
 #include "test/test_common/utility.h"
 
@@ -98,37 +99,17 @@ TEST(StringUtil, atoull) {
   EXPECT_EQ(18446744073709551615U, out);
 }
 
-TEST(StringUtil, atoll) {
-  int64_t out;
-  EXPECT_FALSE(StringUtil::atoll("-123b", out));
-  EXPECT_FALSE(StringUtil::atoll("", out));
-  EXPECT_FALSE(StringUtil::atoll("b123", out));
-
-  EXPECT_TRUE(StringUtil::atoll("123", out));
-  EXPECT_EQ(123, out);
-  EXPECT_TRUE(StringUtil::atoll("-123", out));
-  EXPECT_EQ(-123, out);
-  EXPECT_TRUE(StringUtil::atoll("+123", out));
-  EXPECT_EQ(123, out);
-
-  EXPECT_TRUE(StringUtil::atoll("  456", out));
-  EXPECT_EQ(456, out);
-
-  EXPECT_TRUE(StringUtil::atoll("00789", out));
-  EXPECT_EQ(789, out);
-
-  // INT64_MAX + 1
-  EXPECT_FALSE(StringUtil::atoll("9223372036854775808", out));
-
-  // INT64_MIN
-  EXPECT_TRUE(StringUtil::atoll("-9223372036854775808", out));
-  EXPECT_EQ(INT64_MIN, out);
-}
-
 TEST(DateUtil, All) {
   EXPECT_FALSE(DateUtil::timePointValid(SystemTime()));
   DangerousDeprecatedTestTime test_time;
   EXPECT_TRUE(DateUtil::timePointValid(test_time.timeSystem().systemTime()));
+}
+
+TEST(DateUtil, NowToMilliseconds) {
+  Event::SimulatedTimeSystem test_time;
+  const SystemTime time_with_millis(std::chrono::seconds(12345) + std::chrono::milliseconds(67));
+  test_time.setSystemTime(time_with_millis);
+  EXPECT_EQ(12345067, DateUtil::nowToMilliseconds(test_time));
 }
 
 TEST(InputConstMemoryStream, All) {
@@ -212,20 +193,6 @@ TEST(StringUtil, strlcpy) {
   }
 }
 
-TEST(StringUtil, join) {
-  EXPECT_EQ("hello,world", StringUtil::join({"hello", "world"}, ","));
-  EXPECT_EQ("hello", StringUtil::join({"hello"}, ","));
-  EXPECT_EQ("", StringUtil::join({}, ","));
-
-  EXPECT_EQ("helloworld", StringUtil::join({"hello", "world"}, ""));
-  EXPECT_EQ("hello", StringUtil::join({"hello"}, ""));
-  EXPECT_EQ("", StringUtil::join({}, ""));
-
-  EXPECT_EQ("hello,,world", StringUtil::join({"hello", "world"}, ",,"));
-  EXPECT_EQ("hello", StringUtil::join({"hello"}, ",,"));
-  EXPECT_EQ("", StringUtil::join({}, ",,"));
-}
-
 TEST(StringUtil, escape) {
   EXPECT_EQ(StringUtil::escape("hello world"), "hello world");
   EXPECT_EQ(StringUtil::escape("hello\nworld\n"), "hello\\nworld\\n");
@@ -238,13 +205,6 @@ TEST(StringUtil, toUpper) {
   EXPECT_EQ(StringUtil::toUpper("a"), "A");
   EXPECT_EQ(StringUtil::toUpper("Ba"), "BA");
   EXPECT_EQ(StringUtil::toUpper("X asdf aAf"), "X ASDF AAF");
-}
-
-TEST(StringUtil, toLower) {
-  EXPECT_EQ(StringUtil::toLower(""), "");
-  EXPECT_EQ(StringUtil::toLower("a"), "a");
-  EXPECT_EQ(StringUtil::toLower("Ba"), "ba");
-  EXPECT_EQ(StringUtil::toLower("X asdf aAf"), "x asdf aaf");
 }
 
 TEST(StringUtil, StringViewLtrim) {
@@ -264,6 +224,13 @@ TEST(StringUtil, StringViewRtrim) {
   EXPECT_EQ("", StringUtil::rtrim(""));
 }
 
+TEST(StringUtil, RemoveTrailingCharacters) {
+  EXPECT_EQ("", StringUtil::removeTrailingCharacters("......", '.'));
+  EXPECT_EQ("\t\f\v\n\rhello ", StringUtil::removeTrailingCharacters("\t\f\v\n\rhello ", '.'));
+  EXPECT_EQ("\t\f\v\n\r a b", StringUtil::removeTrailingCharacters("\t\f\v\n\r a b.......", '.'));
+  EXPECT_EQ("", StringUtil::removeTrailingCharacters("", '.'));
+}
+
 TEST(StringUtil, StringViewTrim) {
   EXPECT_EQ("", StringUtil::trim("   "));
   EXPECT_EQ("hello", StringUtil::trim("\t\f\v\n\r  hello   "));
@@ -281,13 +248,6 @@ TEST(StringUtil, StringViewCaseFindToken) {
   EXPECT_TRUE(StringUtil::caseFindToken(" ", " ", "", true));
   EXPECT_FALSE(StringUtil::caseFindToken(" ", " ", "", false));
   EXPECT_TRUE(StringUtil::caseFindToken("A=5", ".", "A=5"));
-}
-
-TEST(StringUtil, StringViewCaseCompare) {
-  EXPECT_TRUE(StringUtil::caseCompare("HELLO world", "hello world"));
-  EXPECT_TRUE(StringUtil::caseCompare("hello world", "HELLO world"));
-  EXPECT_FALSE(StringUtil::caseCompare("hello world", "hello"));
-  EXPECT_FALSE(StringUtil::caseCompare("hello", "hello world"));
 }
 
 TEST(StringUtil, StringViewCropRight) {
@@ -393,6 +353,58 @@ TEST(StringUtil, StringViewSplit) {
     EXPECT_THAT(std::vector<absl::string_view>({"hello", "world"}),
                 ContainerEq(StringUtil::splitToken("hello world", " ", true)));
   }
+  {
+    auto tokens = StringUtil::splitToken(" one , two , three ", ",", true, true);
+    EXPECT_EQ(3, tokens.size());
+    EXPECT_TRUE(std::find(tokens.begin(), tokens.end(), "one") != tokens.end());
+    EXPECT_TRUE(std::find(tokens.begin(), tokens.end(), "two") != tokens.end());
+    EXPECT_TRUE(std::find(tokens.begin(), tokens.end(), "three") != tokens.end());
+  }
+  {
+    auto tokens = StringUtil::splitToken(" one ,  , three=five ", ",=", true, true);
+    EXPECT_EQ(4, tokens.size());
+    EXPECT_TRUE(std::find(tokens.begin(), tokens.end(), "one") != tokens.end());
+    EXPECT_TRUE(std::find(tokens.begin(), tokens.end(), "") != tokens.end());
+    EXPECT_TRUE(std::find(tokens.begin(), tokens.end(), "three") != tokens.end());
+    EXPECT_TRUE(std::find(tokens.begin(), tokens.end(), "five") != tokens.end());
+  }
+  {
+    auto tokens = StringUtil::splitToken(" one ,  , three=five ", ",=", false, true);
+    EXPECT_EQ(3, tokens.size());
+    EXPECT_TRUE(std::find(tokens.begin(), tokens.end(), "one") != tokens.end());
+    EXPECT_TRUE(std::find(tokens.begin(), tokens.end(), "three") != tokens.end());
+    EXPECT_TRUE(std::find(tokens.begin(), tokens.end(), "five") != tokens.end());
+  }
+  {
+    auto tokens = StringUtil::splitToken(" one ,  , three=five ", ",=", false);
+    EXPECT_EQ(4, tokens.size());
+    EXPECT_TRUE(std::find(tokens.begin(), tokens.end(), " one ") != tokens.end());
+    EXPECT_TRUE(std::find(tokens.begin(), tokens.end(), "  ") != tokens.end());
+    EXPECT_TRUE(std::find(tokens.begin(), tokens.end(), " three") != tokens.end());
+    EXPECT_TRUE(std::find(tokens.begin(), tokens.end(), "five ") != tokens.end());
+  }
+}
+
+TEST(StringUtil, StringViewRemoveTokens) {
+  // Basic cases.
+  EXPECT_EQ(StringUtil::removeTokens("", ",", {"two"}, ","), "");
+  EXPECT_EQ(StringUtil::removeTokens("one", ",", {"two"}, ","), "one");
+  EXPECT_EQ(StringUtil::removeTokens("one,two ", ",", {"two"}, ","), "one");
+  EXPECT_EQ(StringUtil::removeTokens("one,two ", ",", {"two", "one"}, ","), "");
+  EXPECT_EQ(StringUtil::removeTokens("one,two ", ",", {"one"}, ","), "two");
+  EXPECT_EQ(StringUtil::removeTokens("one,two,three ", ",", {"two"}, ","), "one,three");
+  EXPECT_EQ(StringUtil::removeTokens(" one , two , three ", ",", {"two"}, ","), "one,three");
+  EXPECT_EQ(StringUtil::removeTokens(" one , two , three ", ",", {"three"}, ","), "one,two");
+  EXPECT_EQ(StringUtil::removeTokens(" one , two , three ", ",", {"three"}, ", "), "one, two");
+  EXPECT_EQ(StringUtil::removeTokens("one,two,three", ",", {"two", "three"}, ","), "one");
+  EXPECT_EQ(StringUtil::removeTokens("one,two,three,four", ",", {"two", "three"}, ","), "one,four");
+  // Ignore case.
+  EXPECT_EQ(StringUtil::removeTokens("One,Two,Three,Four", ",", {"two", "three"}, ","), "One,Four");
+  // Longer joiner.
+  EXPECT_EQ(StringUtil::removeTokens("one,two,three,four", ",", {"two", "three"}, " , "),
+            "one , four");
+  // Delimiters.
+  EXPECT_EQ(StringUtil::removeTokens("one,two;three ", ",;", {"two"}, ","), "one,three");
 }
 
 TEST(StringUtil, removeCharacters) {
@@ -428,22 +440,6 @@ TEST(Primes, findPrimeLargerThan) {
   EXPECT_EQ(10007, Primes::findPrimeLargerThan(9991));
 }
 
-TEST(RegexUtil, parseRegex) {
-  EXPECT_THROW_WITH_REGEX(RegexUtil::parseRegex("(+invalid)"), EnvoyException,
-                          "Invalid regex '\\(\\+invalid\\)': .+");
-
-  {
-    std::regex regex = RegexUtil::parseRegex("x*");
-    EXPECT_NE(0, regex.flags() & std::regex::optimize);
-  }
-
-  {
-    std::regex regex = RegexUtil::parseRegex("x*", std::regex::icase);
-    EXPECT_NE(0, regex.flags() & std::regex::icase);
-    EXPECT_EQ(0, regex.flags() & std::regex::optimize);
-  }
-}
-
 class WeightedClusterEntry {
 public:
   WeightedClusterEntry(const std::string name, const uint64_t weight)
@@ -456,7 +452,7 @@ private:
   const std::string name_;
   const uint64_t weight_;
 };
-typedef std::shared_ptr<WeightedClusterEntry> WeightedClusterEntrySharedPtr;
+using WeightedClusterEntrySharedPtr = std::shared_ptr<WeightedClusterEntry>;
 
 TEST(WeightedClusterUtil, pickCluster) {
   std::vector<WeightedClusterEntrySharedPtr> clusters;
@@ -826,6 +822,57 @@ TEST(DateFormatter, FromTimeSameWildcard) {
             DateFormatter("%Y-%m-%dT%H:%M:%S.000Z%3f").fromTime(time1));
   EXPECT_EQ("2018-04-03T23:06:09.000Z114",
             DateFormatter("%Y-%m-%dT%H:%M:%S.000Z%1f%2f").fromTime(time1));
+}
+
+TEST(TrieLookupTable, AddItems) {
+  TrieLookupTable<const char*> trie;
+  const char* cstr_a = "a";
+  const char* cstr_b = "b";
+  const char* cstr_c = "c";
+
+  EXPECT_TRUE(trie.add("foo", cstr_a));
+  EXPECT_TRUE(trie.add("bar", cstr_b));
+  EXPECT_EQ(cstr_a, trie.find("foo"));
+  EXPECT_EQ(cstr_b, trie.find("bar"));
+
+  // overwrite_existing = false
+  EXPECT_FALSE(trie.add("foo", cstr_c, false));
+  EXPECT_EQ(cstr_a, trie.find("foo"));
+
+  // overwrite_existing = true
+  EXPECT_TRUE(trie.add("foo", cstr_c));
+  EXPECT_EQ(cstr_c, trie.find("foo"));
+}
+
+TEST(TrieLookupTable, LongestPrefix) {
+  TrieLookupTable<const char*> trie;
+  const char* cstr_a = "a";
+  const char* cstr_b = "b";
+  const char* cstr_c = "c";
+
+  EXPECT_TRUE(trie.add("foo", cstr_a));
+  EXPECT_TRUE(trie.add("bar", cstr_b));
+  EXPECT_TRUE(trie.add("baro", cstr_c));
+
+  EXPECT_EQ(cstr_a, trie.find("foo"));
+  EXPECT_EQ(cstr_a, trie.findLongestPrefix("foo"));
+  EXPECT_EQ(cstr_a, trie.findLongestPrefix("foosball"));
+
+  EXPECT_EQ(cstr_b, trie.find("bar"));
+  EXPECT_EQ(cstr_b, trie.findLongestPrefix("bar"));
+  EXPECT_EQ(cstr_b, trie.findLongestPrefix("baritone"));
+  EXPECT_EQ(cstr_c, trie.findLongestPrefix("barometer"));
+
+  EXPECT_EQ(nullptr, trie.find("toto"));
+  EXPECT_EQ(nullptr, trie.findLongestPrefix("toto"));
+  EXPECT_EQ(nullptr, trie.find(" "));
+  EXPECT_EQ(nullptr, trie.findLongestPrefix(" "));
+}
+
+TEST(InlineStorageTest, InlineString) {
+  InlineStringPtr hello = InlineString::create("Hello, world!");
+  EXPECT_EQ("Hello, world!", hello->toStringView());
+  EXPECT_EQ("Hello, world!", hello->toString());
 }
 
 } // namespace Envoy

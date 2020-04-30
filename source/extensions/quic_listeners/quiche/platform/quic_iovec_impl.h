@@ -6,4 +6,4 @@
 // consumed or referenced directly by other Envoy code. It serves purely as a
 // porting layer for QUICHE.
 
-#include <sys/uio.h>
+#include "envoy/common/platform.h"

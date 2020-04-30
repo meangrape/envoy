@@ -12,13 +12,13 @@ namespace Envoy {
 namespace Tcp {
 namespace ConnectionPool {
 
-MockCancellable::MockCancellable() {}
-MockCancellable::~MockCancellable() {}
+MockCancellable::MockCancellable() = default;
+MockCancellable::~MockCancellable() = default;
 
-MockUpstreamCallbacks::MockUpstreamCallbacks() {}
-MockUpstreamCallbacks::~MockUpstreamCallbacks() {}
+MockUpstreamCallbacks::MockUpstreamCallbacks() = default;
+MockUpstreamCallbacks::~MockUpstreamCallbacks() = default;
 
-MockConnectionData::MockConnectionData() {}
+MockConnectionData::MockConnectionData() = default;
 MockConnectionData::~MockConnectionData() {
   if (release_callback_) {
     release_callback_();
@@ -29,8 +29,9 @@ MockInstance::MockInstance() {
   ON_CALL(*this, newConnection(_)).WillByDefault(Invoke([&](Callbacks& cb) -> Cancellable* {
     return newConnectionImpl(cb);
   }));
+  ON_CALL(*this, host()).WillByDefault(Return(host_));
 }
-MockInstance::~MockInstance() {}
+MockInstance::~MockInstance() = default;
 
 MockCancellable* MockInstance::newConnectionImpl(Callbacks& cb) {
   handles_.emplace_back();

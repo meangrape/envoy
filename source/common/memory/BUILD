@@ -23,6 +23,9 @@ envoy_cc_library(
     srcs = ["utils.cc"],
     hdrs = ["utils.h"],
     tcmalloc_dep = 1,
+    deps = [
+        ":stats_lib",
+    ],
 )
 
 envoy_cc_library(
@@ -34,5 +37,6 @@ envoy_cc_library(
         "//include/envoy/event:dispatcher_interface",
         "//include/envoy/server:overload_manager_interface",
         "//include/envoy/stats:stats_interface",
+        "//source/common/stats:symbol_table_lib",
     ],
 )

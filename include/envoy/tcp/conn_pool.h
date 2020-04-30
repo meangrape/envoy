@@ -4,6 +4,7 @@
 #include <memory>
 
 #include "envoy/buffer/buffer.h"
+#include "envoy/common/conn_pool.h"
 #include "envoy/common/pure.h"
 #include "envoy/event/deferred_deletable.h"
 #include "envoy/upstream/upstream.h"
@@ -32,7 +33,7 @@ enum class CancelPolicy {
  */
 class Cancellable {
 public:
-  virtual ~Cancellable() {}
+  virtual ~Cancellable() = default;
 
   /**
    * Cancel the pending connection request.
@@ -42,20 +43,6 @@ public:
   virtual void cancel(CancelPolicy cancel_policy) PURE;
 };
 
-/**
- * Reason that a pool connection could not be obtained.
- */
-enum class PoolFailureReason {
-  // A resource overflowed and policy prevented a new connection from being created.
-  Overflow,
-  // A local connection failure took place while creating a new connection.
-  LocalConnectionFailure,
-  // A remote connection failure took place while creating a new connection.
-  RemoteConnectionFailure,
-  // A timeout occurred while creating a new connection.
-  Timeout,
-};
-
 /*
  * UpstreamCallbacks for connection pool upstream connection callbacks and data. Note that
  * onEvent(Connected) is never triggered since the event always occurs before a ConnectionPool
@@ -63,7 +50,7 @@ enum class PoolFailureReason {
  */
 class UpstreamCallbacks : public Network::ConnectionCallbacks {
 public:
-  virtual ~UpstreamCallbacks() {}
+  ~UpstreamCallbacks() override = default;
 
   /*
    * Invoked when data is delivered from the upstream connection while the connection is owned by a
@@ -85,10 +72,10 @@ public:
  */
 class ConnectionState {
 public:
-  virtual ~ConnectionState() {}
+  virtual ~ConnectionState() = default;
 };
 
-typedef std::unique_ptr<ConnectionState> ConnectionStatePtr;
+using ConnectionStatePtr = std::unique_ptr<ConnectionState>;
 
 /*
  * ConnectionData wraps a ClientConnection allocated to a caller. Open ClientConnections are
@@ -96,7 +83,7 @@ typedef std::unique_ptr<ConnectionState> ConnectionStatePtr;
  */
 class ConnectionData {
 public:
-  virtual ~ConnectionData() {}
+  virtual ~ConnectionData() = default;
 
   /**
    * @return the ClientConnection for the connection.
@@ -130,7 +117,8 @@ protected:
   virtual ConnectionState* connectionState() PURE;
 };
 
-typedef std::unique_ptr<ConnectionData> ConnectionDataPtr;
+using ConnectionDataPtr = std::unique_ptr<ConnectionData>;
+using PoolFailureReason = ::Envoy::ConnectionPool::PoolFailureReason;
 
 /**
  * Pool callbacks invoked in the context of a newConnection() call, either synchronously or
@@ -138,7 +126,7 @@ typedef std::unique_ptr<ConnectionData> ConnectionDataPtr;
  */
 class Callbacks {
 public:
-  virtual ~Callbacks() {}
+  virtual ~Callbacks() = default;
 
   /**
    * Called when a pool error occurred and no connection could be acquired for making the request.
@@ -168,13 +156,13 @@ public:
  */
 class Instance : public Event::DeferredDeletable {
 public:
-  virtual ~Instance() {}
+  ~Instance() override = default;
 
   /**
    * Called when a connection pool has been drained of pending requests, busy connections, and
    * ready connections.
    */
-  typedef std::function<void()> DrainedCb;
+  using DrainedCb = std::function<void()>;
 
   /**
    * Register a callback that gets called when the connection pool is fully drained. No actual
@@ -203,9 +191,14 @@ public:
    *                      should be done by resetting the connection.
    */
   virtual Cancellable* newConnection(Callbacks& callbacks) PURE;
+
+  /**
+   * @return the description of the host this connection pool is for.
+   */
+  virtual Upstream::HostDescriptionConstSharedPtr host() const PURE;
 };
 
-typedef std::unique_ptr<Instance> InstancePtr;
+using InstancePtr = std::unique_ptr<Instance>;
 
 } // namespace ConnectionPool
 } // namespace Tcp

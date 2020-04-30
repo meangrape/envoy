@@ -1,6 +1,5 @@
 #include "extensions/filters/network/dubbo_proxy/router/router_impl.h"
 
-#include "envoy/config/filter/network/dubbo_proxy/v2alpha1/dubbo_proxy.pb.h"
 #include "envoy/upstream/cluster_manager.h"
 #include "envoy/upstream/thread_local_cluster.h"
 
@@ -23,47 +22,19 @@ void Router::setDecoderFilterCallbacks(DubboFilters::DecoderFilterCallbacks& cal
   callbacks_ = &callbacks;
 }
 
-Network::FilterStatus Router::transportBegin() {
-  upstream_request_buffer_.drain(upstream_request_buffer_.length());
-  ProtocolDataPassthroughConverter::initProtocolConverter(upstream_request_buffer_);
-  return Network::FilterStatus::Continue;
-}
+FilterStatus Router::onMessageDecoded(MessageMetadataSharedPtr metadata, ContextSharedPtr ctx) {
+  ASSERT(metadata->hasInvocationInfo());
+  const auto& invocation = metadata->invocation_info();
 
-Network::FilterStatus Router::transportEnd() {
-  // If the connection fails, the callback of the filter will be suspended,
-  // so it is impossible to call the transportEnd interface.
-  // the encodeData function will be called only if the connection is successful.
-  ASSERT(upstream_request_);
-  ASSERT(upstream_request_->conn_data_);
-
-  upstream_request_->encodeData(upstream_request_buffer_);
-
-  if (upstream_request_->metadata_->message_type() == MessageType::Oneway) {
-    // No response expected
-    upstream_request_->onResponseComplete();
-    cleanup();
-    ENVOY_LOG(debug, "dubbo upstream request: the message is one-way and no response is required");
-  }
-
-  filter_complete_ = true;
-
-  return Network::FilterStatus::Continue;
-}
-
-Network::FilterStatus Router::messageBegin(MessageType, int64_t, SerializationType) {
-  return Network::FilterStatus::Continue;
-}
-
-Network::FilterStatus Router::messageEnd(MessageMetadataSharedPtr metadata) {
   route_ = callbacks_->route();
   if (!route_) {
     ENVOY_STREAM_LOG(debug, "dubbo router: no cluster match for interface '{}'", *callbacks_,
-                     metadata->service_name());
+                     invocation.service_name());
     callbacks_->sendLocalReply(AppException(ResponseStatus::ServiceNotFound,
                                             fmt::format("dubbo router: no route for interface '{}'",
-                                                        metadata->service_name())),
+                                                        invocation.service_name())),
                                false);
-    return Network::FilterStatus::StopIteration;
+    return FilterStatus::StopIteration;
   }
 
   route_entry_ = route_->routeEntry();
@@ -76,12 +47,12 @@ Network::FilterStatus Router::messageEnd(MessageMetadataSharedPtr metadata) {
         AppException(ResponseStatus::ServerError, fmt::format("dubbo router: unknown cluster '{}'",
                                                               route_entry_->clusterName())),
         false);
-    return Network::FilterStatus::StopIteration;
+    return FilterStatus::StopIteration;
   }
 
   cluster_ = cluster->info();
   ENVOY_STREAM_LOG(debug, "dubbo router: cluster '{}' match for interface '{}'", *callbacks_,
-                   route_entry_->clusterName(), metadata->service_name());
+                   route_entry_->clusterName(), invocation.service_name());
 
   if (cluster_->maintenanceMode()) {
     callbacks_->sendLocalReply(
@@ -89,25 +60,25 @@ Network::FilterStatus Router::messageEnd(MessageMetadataSharedPtr metadata) {
                      fmt::format("dubbo router: maintenance mode for cluster '{}'",
                                  route_entry_->clusterName())),
         false);
-    return Network::FilterStatus::StopIteration;
+    return FilterStatus::StopIteration;
   }
 
   Tcp::ConnectionPool::Instance* conn_pool = cluster_manager_.tcpConnPoolForCluster(
-      route_entry_->clusterName(), Upstream::ResourcePriority::Default, this, nullptr);
+      route_entry_->clusterName(), Upstream::ResourcePriority::Default, this);
   if (!conn_pool) {
     callbacks_->sendLocalReply(
         AppException(
             ResponseStatus::ServerError,
             fmt::format("dubbo router: no healthy upstream for '{}'", route_entry_->clusterName())),
         false);
-    return Network::FilterStatus::StopIteration;
+    return FilterStatus::StopIteration;
   }
 
   ENVOY_STREAM_LOG(debug, "dubbo router: decoding request", *callbacks_);
+  upstream_request_buffer_.move(ctx->message_origin_data(), ctx->message_size());
 
-  upstream_request_ = std::make_unique<UpstreamRequest>(*this, *conn_pool, metadata,
-                                                        callbacks_->downstreamSerializationType(),
-                                                        callbacks_->downstreamProtocolType());
+  upstream_request_ = std::make_unique<UpstreamRequest>(
+      *this, *conn_pool, metadata, callbacks_->serializationType(), callbacks_->protocolType());
   return upstream_request_->start();
 }
 
@@ -118,8 +89,7 @@ void Router::onUpstreamData(Buffer::Instance& data, bool end_stream) {
 
   // Handle normal response.
   if (!upstream_request_->response_started_) {
-    callbacks_->startUpstreamResponse(*upstream_request_->deserializer_.get(),
-                                      *upstream_request_->protocol_.get());
+    callbacks_->startUpstreamResponse();
     upstream_request_->response_started_ = true;
   }
 
@@ -142,8 +112,7 @@ void Router::onUpstreamData(Buffer::Instance& data, bool end_stream) {
   if (end_stream) {
     // Response is incomplete, but no more data is coming.
     ENVOY_STREAM_LOG(debug, "dubbo router: response underflow", *callbacks_);
-    upstream_request_->onResetStream(
-        Tcp::ConnectionPool::PoolFailureReason::RemoteConnectionFailure);
+    upstream_request_->onResetStream(ConnectionPool::PoolFailureReason::RemoteConnectionFailure);
     upstream_request_->onResponseComplete();
     cleanup();
   }
@@ -152,17 +121,21 @@ void Router::onUpstreamData(Buffer::Instance& data, bool end_stream) {
 void Router::onEvent(Network::ConnectionEvent event) {
   if (!upstream_request_ || upstream_request_->response_complete_) {
     // Client closed connection after completing response.
+    ENVOY_LOG(debug, "dubbo upstream request: the upstream request had completed");
+    return;
+  }
+
+  if (upstream_request_->stream_reset_ && event == Network::ConnectionEvent::LocalClose) {
+    ENVOY_LOG(debug, "dubbo upstream request: the stream reset");
     return;
   }
 
   switch (event) {
   case Network::ConnectionEvent::RemoteClose:
-    upstream_request_->onResetStream(
-        Tcp::ConnectionPool::PoolFailureReason::RemoteConnectionFailure);
+    upstream_request_->onResetStream(ConnectionPool::PoolFailureReason::RemoteConnectionFailure);
     break;
   case Network::ConnectionEvent::LocalClose:
-    upstream_request_->onResetStream(
-        Tcp::ConnectionPool::PoolFailureReason::LocalConnectionFailure);
+    upstream_request_->onResetStream(ConnectionPool::PoolFailureReason::LocalConnectionFailure);
     break;
   default:
     // Connected is consumed by the connection pool.
@@ -185,25 +158,27 @@ Router::UpstreamRequest::UpstreamRequest(Router& parent, Tcp::ConnectionPool::In
                                          SerializationType serialization_type,
                                          ProtocolType protocol_type)
     : parent_(parent), conn_pool_(pool), metadata_(metadata),
-      deserializer_(
-          NamedDeserializerConfigFactory::getFactory(serialization_type).createDeserializer()),
-      protocol_(NamedProtocolConfigFactory::getFactory(protocol_type).createProtocol()),
-      request_complete_(false), response_started_(false), response_complete_(false) {}
+      protocol_(
+          NamedProtocolConfigFactory::getFactory(protocol_type).createProtocol(serialization_type)),
+      request_complete_(false), response_started_(false), response_complete_(false),
+      stream_reset_(false) {}
 
-Router::UpstreamRequest::~UpstreamRequest() {}
+Router::UpstreamRequest::~UpstreamRequest() = default;
 
-Network::FilterStatus Router::UpstreamRequest::start() {
+FilterStatus Router::UpstreamRequest::start() {
   Tcp::ConnectionPool::Cancellable* handle = conn_pool_.newConnection(*this);
   if (handle) {
     // Pause while we wait for a connection.
     conn_pool_handle_ = handle;
-    return Network::FilterStatus::StopIteration;
+    return FilterStatus::StopIteration;
   }
 
-  return Network::FilterStatus::Continue;
+  return FilterStatus::Continue;
 }
 
 void Router::UpstreamRequest::resetStream() {
+  stream_reset_ = true;
+
   if (conn_pool_handle_) {
     ASSERT(!conn_data_);
     conn_pool_handle_->cancel(Tcp::ConnectionPool::CancelPolicy::Default);
@@ -227,7 +202,7 @@ void Router::UpstreamRequest::encodeData(Buffer::Instance& data) {
   conn_data_->connection().write(data, false);
 }
 
-void Router::UpstreamRequest::onPoolFailure(Tcp::ConnectionPool::PoolFailureReason reason,
+void Router::UpstreamRequest::onPoolFailure(ConnectionPool::PoolFailureReason reason,
                                             Upstream::HostDescriptionConstSharedPtr host) {
   conn_pool_handle_ = nullptr;
 
@@ -241,9 +216,9 @@ void Router::UpstreamRequest::onPoolFailure(Tcp::ConnectionPool::PoolFailureReas
   // the error asynchronously and the upper layer needs to be notified to continue decoding.
   // If it is a non-connection error, it is returned synchronously from the connection pool
   // and is still in the callback at the current Filter, nothing to do.
-  if (reason == Tcp::ConnectionPool::PoolFailureReason::Timeout ||
-      reason == Tcp::ConnectionPool::PoolFailureReason::LocalConnectionFailure ||
-      reason == Tcp::ConnectionPool::PoolFailureReason::RemoteConnectionFailure) {
+  if (reason == ConnectionPool::PoolFailureReason::Timeout ||
+      reason == ConnectionPool::PoolFailureReason::LocalConnectionFailure ||
+      reason == ConnectionPool::PoolFailureReason::RemoteConnectionFailure) {
     parent_.callbacks_->continueDecoding();
   }
 }
@@ -261,6 +236,7 @@ void Router::UpstreamRequest::onPoolReady(Tcp::ConnectionPool::ConnectionDataPtr
   conn_pool_handle_ = nullptr;
 
   onRequestStart(continue_decoding);
+  encodeData(parent_.upstream_request_buffer_);
 }
 
 void Router::UpstreamRequest::onRequestStart(bool continue_decoding) {
@@ -285,7 +261,7 @@ void Router::UpstreamRequest::onUpstreamHostSelected(Upstream::HostDescriptionCo
   upstream_host_ = host;
 }
 
-void Router::UpstreamRequest::onResetStream(Tcp::ConnectionPool::PoolFailureReason reason) {
+void Router::UpstreamRequest::onResetStream(ConnectionPool::PoolFailureReason reason) {
   if (metadata_->message_type() == MessageType::Oneway) {
     // For oneway requests, we should not attempt a response. Reset the downstream to signal
     // an error.
@@ -297,13 +273,13 @@ void Router::UpstreamRequest::onResetStream(Tcp::ConnectionPool::PoolFailureReas
   // When the filter's callback does not end, the sendLocalReply function call
   // triggers the release of the current stream at the end of the filter's callback.
   switch (reason) {
-  case Tcp::ConnectionPool::PoolFailureReason::Overflow:
+  case ConnectionPool::PoolFailureReason::Overflow:
     parent_.callbacks_->sendLocalReply(
         AppException(ResponseStatus::ServerError,
                      fmt::format("dubbo upstream request: too many connections")),
         false);
     break;
-  case Tcp::ConnectionPool::PoolFailureReason::LocalConnectionFailure:
+  case ConnectionPool::PoolFailureReason::LocalConnectionFailure:
     // Should only happen if we closed the connection, due to an error condition, in which case
     // we've already handled any possible downstream response.
     parent_.callbacks_->sendLocalReply(
@@ -312,14 +288,14 @@ void Router::UpstreamRequest::onResetStream(Tcp::ConnectionPool::PoolFailureReas
                                  upstream_host_->address()->asString())),
         false);
     break;
-  case Tcp::ConnectionPool::PoolFailureReason::RemoteConnectionFailure:
+  case ConnectionPool::PoolFailureReason::RemoteConnectionFailure:
     parent_.callbacks_->sendLocalReply(
         AppException(ResponseStatus::ServerError,
                      fmt::format("dubbo upstream request: remote connection failure '{}'",
                                  upstream_host_->address()->asString())),
         false);
     break;
-  case Tcp::ConnectionPool::PoolFailureReason::Timeout:
+  case ConnectionPool::PoolFailureReason::Timeout:
     parent_.callbacks_->sendLocalReply(
         AppException(ResponseStatus::ServerError,
                      fmt::format("dubbo upstream request: connection failure '{}' due to timeout",

@@ -4,6 +4,7 @@
 #include <unordered_map>
 
 #include "envoy/buffer/buffer.h"
+#include "envoy/config/typed_config.h"
 
 #include "common/common/assert.h"
 #include "common/common/fmt.h"
@@ -12,69 +13,33 @@
 
 #include "extensions/filters/network/dubbo_proxy/message.h"
 #include "extensions/filters/network/dubbo_proxy/metadata.h"
+#include "extensions/filters/network/dubbo_proxy/serializer.h"
 
 namespace Envoy {
 namespace Extensions {
 namespace NetworkFilters {
 namespace DubboProxy {
 
-enum class ProtocolType : uint8_t {
-  Dubbo = 0,
-
-  // ATTENTION: MAKE SURE THIS REMAINS EQUAL TO THE LAST PROTOCOL TYPE
-  LastProtocolType = Dubbo,
-};
-
-/**
- * Names of available Protocol implementations.
- */
-class ProtocolNameValues {
-public:
-  struct ProtocolTypeHash {
-    template <typename T> std::size_t operator()(T t) const { return static_cast<std::size_t>(t); }
-  };
-
-  typedef std::unordered_map<ProtocolType, std::string, ProtocolTypeHash> ProtocolTypeNameMap;
-
-  const ProtocolTypeNameMap protocolTypeNameMap = {
-      {ProtocolType::Dubbo, "dubbo"},
-  };
-
-  const std::string& fromType(ProtocolType type) const {
-    const auto& itor = protocolTypeNameMap.find(type);
-    if (itor != protocolTypeNameMap.end()) {
-      return itor->second;
-    }
-
-    NOT_REACHED_GCOVR_EXCL_LINE;
-  }
-};
-
-typedef ConstSingleton<ProtocolNameValues> ProtocolNames;
-
-/**
- * ProtocolCallbacks are Dubbo protocol-level callbacks.
- */
-class ProtocolCallbacks {
-public:
-  virtual ~ProtocolCallbacks() {}
-  virtual void onRequestMessage(RequestMessagePtr&& req) PURE;
-  virtual void onResponseMessage(ResponseMessagePtr&& res) PURE;
-};
-
 /**
  * See https://dubbo.incubator.apache.org/en-us/docs/dev/implementation.html
  */
 class Protocol {
 public:
-  struct Context {
-    bool is_request_ = false;
-    size_t body_size_ = 0;
-    size_t header_size_ = 0;
-    bool is_heartbeat_ = false;
-  };
-  virtual ~Protocol() {}
-  Protocol() {}
+  virtual ~Protocol() = default;
+  Protocol() = default;
+
+  /**
+   * @return Initializes the serializer used by the protocol codec
+   */
+  void initSerializer(SerializationType type) {
+    serializer_ = NamedSerializerConfigFactory::getFactory(this->type(), type).createSerializer();
+  }
+
+  /**
+   * @return Serializer the protocol Serializer
+   */
+  virtual Serializer* serializer() const { return serializer_.get(); }
+
   virtual const std::string& name() const PURE;
 
   /**
@@ -83,23 +48,21 @@ public:
   virtual ProtocolType type() const PURE;
 
   /*
-   * This interface will be deprecated,
-   * it is reserved for the purpose of compatibility with the existing Filter implementation,
-   * this interface will be deleted after the new Filter implementation code is submitted.
-   *
-   * decodes the dubbo protocol message, potentially invoking callbacks.
-   * If successful, the message is removed from the buffer.
+   * decodes the dubbo protocol message header.
    *
    * @param buffer the currently buffered dubbo data.
-   * @param context save the meta data of current messages
-   * @return bool true if a complete message was successfully consumed, false if more data
+   * @param metadata the meta data of current messages
+   * @return ContextSharedPtr save the context data of current messages,
+   *                 nullptr if more data is required.
+   *         bool true if a complete message was successfully consumed, false if more data
    *                 is required.
    * @throws EnvoyException if the data is not valid for this protocol.
    */
-  virtual bool decode(Buffer::Instance& buffer, Context* context) PURE;
+  virtual std::pair<ContextSharedPtr, bool> decodeHeader(Buffer::Instance& buffer,
+                                                         MessageMetadataSharedPtr metadata) PURE;
 
   /*
-   * decodes the dubbo protocol message, potentially invoking callbacks.
+   * decodes the dubbo protocol message body, potentially invoking callbacks.
    * If successful, the message is removed from the buffer.
    *
    * @param buffer the currently buffered dubbo data.
@@ -109,52 +72,44 @@ public:
    *                 is required.
    * @throws EnvoyException if the data is not valid for this protocol.
    */
-  virtual bool decode(Buffer::Instance& buffer, Context* context,
-                      MessageMetadataSharedPtr metadata) PURE;
+  virtual bool decodeData(Buffer::Instance& buffer, ContextSharedPtr context,
+                          MessageMetadataSharedPtr metadata) PURE;
 
   /*
    * encodes the dubbo protocol message.
    *
    * @param buffer save the currently buffered dubbo data.
    * @param metadata the meta data of dubbo protocol
+   * @param content the body of dubbo protocol message
+   * @param type the type of dubbo protocol response message
    * @return bool true if the protocol coding succeeds.
    */
-  virtual bool encode(Buffer::Instance& buffer, int32_t body_size,
-                      const MessageMetadata& metadata) PURE;
+  virtual bool encode(Buffer::Instance& buffer, const MessageMetadata& metadata,
+                      const std::string& content,
+                      RpcResponseType type = RpcResponseType::ResponseWithValue) PURE;
+
+protected:
+  SerializerPtr serializer_;
 };
 
-typedef std::unique_ptr<Protocol> ProtocolPtr;
+using ProtocolPtr = std::unique_ptr<Protocol>;
 
 /**
  * Implemented by each Dubbo protocol and registered via Registry::registerFactory or the
  * convenience class RegisterFactory.
  */
-class NamedProtocolConfigFactory {
+class NamedProtocolConfigFactory : public Config::UntypedFactory {
 public:
-  virtual ~NamedProtocolConfigFactory() {}
-
-  /**
-   * This interface will be deprecated,
-   * it is reserved for the purpose of compatibility with the existing Filter implementation,
-   * this interface will be deleted after the new Filter implementation code is submitted.
-   *
-   * Create a particular Dubbo protocol.
-   * @param callbacks the callbacks to be notified of protocol decodes.
-   * @return protocol instance pointer.
-   */
-  virtual ProtocolPtr createProtocol(ProtocolCallbacks& callbacks) PURE;
+  ~NamedProtocolConfigFactory() override = default;
 
   /**
    * Create a particular Dubbo protocol.
+   * @param serialization_type the serialization type of the protocol body.
    * @return protocol instance pointer.
    */
-  virtual ProtocolPtr createProtocol() PURE;
+  virtual ProtocolPtr createProtocol(SerializationType serialization_type) PURE;
 
-  /**
-   * @return std::string the identifying name for a particular implementation of Dubbo protocol
-   * produced by the factory.
-   */
-  virtual std::string name() PURE;
+  std::string category() const override { return "envoy.dubbo_proxy.protocols"; }
 
   /**
    * Convenience method to lookup a factory by type.
@@ -163,7 +118,7 @@ public:
    */
   static NamedProtocolConfigFactory& getFactory(ProtocolType type) {
     const std::string& name = ProtocolNames::get().fromType(type);
-    return Envoy::Config::Utility::getAndCheckFactory<NamedProtocolConfigFactory>(name);
+    return Envoy::Config::Utility::getAndCheckFactoryByName<NamedProtocolConfigFactory>(name);
   }
 };
 
@@ -171,13 +126,14 @@ public:
  * ProtocolFactoryBase provides a template for a trivial NamedProtocolConfigFactory.
  */
 template <class ProtocolImpl> class ProtocolFactoryBase : public NamedProtocolConfigFactory {
-  ProtocolPtr createProtocol(ProtocolCallbacks& callbacks) override {
-    return std::make_unique<ProtocolImpl>(&callbacks);
+public:
+  ProtocolPtr createProtocol(SerializationType serialization_type) override {
+    auto protocol = std::make_unique<ProtocolImpl>();
+    protocol->initSerializer(serialization_type);
+    return protocol;
   }
 
-  ProtocolPtr createProtocol() override { return std::make_unique<ProtocolImpl>(); }
-
-  std::string name() override { return name_; }
+  std::string name() const override { return name_; }
 
 protected:
   ProtocolFactoryBase(ProtocolType type) : name_(ProtocolNames::get().fromType(type)) {}

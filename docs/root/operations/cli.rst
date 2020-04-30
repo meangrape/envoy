@@ -11,7 +11,7 @@ following are the command line options that Envoy supports.
   *(optional)* The path to the v2 :ref:`JSON/YAML/proto3 configuration
   file <config>`. If this flag is missing, :option:`--config-yaml` is required.
   This will be parsed as a :ref:`v2 bootstrap configuration file
-  <config_overview_v2_bootstrap>`.
+  <config_overview_bootstrap>`.
   Valid extensions are ``.json``, ``.yaml``, ``.pb`` and ``.pb_text``, which indicate
   JSON, YAML, `binary proto3
   <https://developers.google.com/protocol-buffers/docs/encoding>`_ and `text
@@ -21,7 +21,7 @@ following are the command line options that Envoy supports.
 
 .. option:: --config-yaml <yaml string>
 
-  *(optional)* The YAML string for a v2 bootstrap configuration. If :option:`--config-path` is also set,
+  *(optional)* The YAML string for a bootstrap configuration. If :option:`--config-path` is also set,
   the values in this YAML string will override and merge with the bootstrap loaded from :option:`--config-path`.
   Because YAML is a superset of JSON, a JSON string may also be passed to :option:`--config-yaml`.
 
@@ -30,6 +30,13 @@ following are the command line options that Envoy supports.
     .. code-block:: console
 
       ./envoy -c bootstrap.yaml --config-yaml "node: {id: 'node1'}"
+
+.. option:: --bootstrap-version <integer>
+
+   *(optional)* The API version to load the bootstrap as. The value should be a single integer, e.g.
+   to parse the bootstrap configuration as V3, specify ``--bootstrap-version 3``. If unset, Envoy will
+   attempt to load the bootstrap as the previous API version and upgrade it to the latest. If that fails,
+   Envoy will attempt to load the configuration as the latest version.
 
 .. option:: --mode <string>
 
@@ -94,6 +101,16 @@ following are the command line options that Envoy supports.
    *(optional)* The format string to use for laying out the log message metadata. If this is not
    set, a default format string ``"[%Y-%m-%d %T.%e][%t][%l][%n] %v"`` is used.
 
+   When used in conjunction with :option:`--log-format-prefix-with-location` set to 0, the logger can be
+   configured to not prefix ``%v`` by a file path and a line number.
+
+   **NOTE**: The default log format will be changed to ``"[%Y-%m-%d %T.%e][%t][%l][%n] [%g:%#] %v"``
+   together with the default value of :option:`--log-format-prefix-with-location` to 0 at 1.16.0 release.
+
+   When used in conjunction with :option:`--log-format-escaped`, the logger can be configured
+   to log in a format that is parsable by log viewers. Known integrations are documented
+   in the :ref:`application logging configuration <config_application_logs>` section.
+
    The supported format flags are (with example output):
 
    :%v:	The actual message to log ("some user text")
@@ -125,6 +142,27 @@ following are the command line options that Envoy supports.
    :%T, %X:	ISO 8601 time format (HH:MM:SS), equivalent to %H:%M:%S ("13:25:06")
    :%z:	ISO 8601 offset from UTC in timezone ([+/-]HH:MM) ("-07:00")
    :%%:	The % sign ("%")
+   :%@: Source file and line ("my_file.cc:123")
+   :%s: Basename of the source file ("my_file.cc")
+   :%g: Full relative path of the source file ("/some/dir/my_file.cc")
+   :%#: Source line ("123")
+   :%!: Source function ("myFunc")
+
+.. option:: --log-format-prefix-with-location <1|0>
+
+   *(optional)* This temporary flag allows replacing all entries of ``"%v"`` in the log format by
+   ``"[%g:%#] %v"``. This flag is provided for migration purposes only. If this is not set, a
+   default value 1 is used.
+
+   **NOTE**: The default value will be changed to 0 at 1.16.0 release and the flag will be
+   removed at 1.17.0 release.
+
+.. option:: --log-format-escaped
+
+  *(optional)* This flag enables application log sanitization to escape C-style escape sequences.
+  This can be used to prevent a single log line from spanning multiple lines in the underlying log.
+  This sanitizes all escape sequences in `this list <https://en.cppreference.com/w/cpp/language/escape>`_.
+  Note that each line's trailing whitespace characters (such as EOL characters) will not be escaped.
 
 .. option:: --restart-epoch <integer>
 
@@ -200,37 +238,20 @@ following are the command line options that Envoy supports.
 
 .. option:: --drain-time-s <integer>
 
-  *(optional)* The time in seconds that Envoy will drain connections during a hot restart. See the
-  :ref:`hot restart overview <arch_overview_hot_restart>` for more information. Defaults to 600
-  seconds (10 minutes). Generally the drain time should be less than the parent shutdown time
-  set via the :option:`--parent-shutdown-time-s` option. How the two settings are configured
-  depends on the specific deployment. In edge scenarios, it might be desirable to have a very long
-  drain time. In service to service scenarios, it might be possible to make the drain and shutdown
-  time much shorter (e.g., 60s/90s).
+  *(optional)* The time in seconds that Envoy will drain connections during 
+  a :ref:`hot restart <arch_overview_hot_restart>` or when individual listeners are being
+  modified or removed via :ref:`LDS <arch_overview_dynamic_config_lds>`. 
+  Defaults to 600 seconds (10 minutes). Generally the drain time should be less than 
+  the parent shutdown time set via the :option:`--parent-shutdown-time-s` option. How the two 
+  settings are configured depends on the specific deployment. In edge scenarios, it might be
+  desirable to have a very long drain time. In service to service scenarios, it might be possible
+  to make the drain and shutdown time much shorter (e.g., 60s/90s).
 
 .. option:: --parent-shutdown-time-s <integer>
 
   *(optional)* The time in seconds that Envoy will wait before shutting down the parent process
   during a hot restart. See the :ref:`hot restart overview <arch_overview_hot_restart>` for more
   information. Defaults to 900 seconds (15 minutes).
-
-.. option:: --max-obj-name-len <uint64_t>
-
-  *(optional)* The maximum name length (in bytes) of the name field in a cluster/route_config/listener.
-  This setting is typically used in scenarios where the cluster names are auto generated, and often exceed
-  the built-in limit of 60 characters. Defaults to 60, and it's not valid to set to less than 60.
-
-  .. attention::
-
-    This setting affects the output of :option:`--hot-restart-version`. If you started envoy with this
-    option set to a non default value, you should use the same option (and same value) for subsequent hot
-    restarts.
-
-.. option:: --max-stats <uint64_t>
-
-  *(optional)* The maximum number of stats that can be shared between hot-restarts. This setting
-  affects the output of :option:`--hot-restart-version`; the same value must be used to hot
-  restart. Defaults to 16384. It's not valid to set this larger than 100 million.
 
 .. option:: --disable-hot-restart
 
@@ -246,10 +267,33 @@ following are the command line options that Envoy supports.
 
 .. option:: --allow-unknown-fields
 
-  *(optional)* This flag disables validation of protobuf configurations for unknown fields. By default, the 
+  *(optional)* Deprecated alias for :option:`--allow-unknown-static-fields`.
+
+.. option:: --allow-unknown-static-fields
+
+  *(optional)* This flag disables validation of protobuf configurations for unknown fields. By default, the
   validation is enabled. For most deployments, the default should be used which ensures configuration errors
-  are caught upfront and Envoy is configured as intended. However in cases where Envoy needs to accept configuration 
-  produced by newer control planes, effectively ignoring new features it does not know about yet, this can be disabled.
+  are caught upfront and Envoy is configured as intended. Warnings are logged for the first use of
+  any unknown field and these occurrences are counted in the :ref:`server.static_unknown_fields
+  <server_statistics>` statistic.
+
+.. option:: --reject-unknown-dynamic-fields
+
+  *(optional)* This flag disables validation of protobuf configuration for unknown fields in
+  dynamic configuration. By default, this flag is set false, disabling validation for fields beyond
+  bootstrap. This allows newer xDS configurations to be delivered to older Envoys. This can be set
+  true for strict dynamic checking when this behavior is not wanted but the default should be
+  desirable for most Envoy deployments. Warnings are logged for the first use of any unknown field
+  and these occurrences are counted in the :ref:`server.dynamic_unknown_fields <server_statistics>`
+  statistic.
+
+.. option:: --disable-extensions <extension list>
+
+  *(optional)* This flag disabled the provided list of comma-separated extension names. Disabled
+  extensions cannot be used by static or dynamic configuration, though they are still linked into
+  Envoy and may run start-up code or have other runtime effects. Extension names are created by
+  joining the extension category and name with a forward slash,
+  e.g. ``grpc_credentials/envoy.grpc_credentials.file_based_metadata``.
 
 .. option:: --version
 

@@ -2,6 +2,8 @@
 
 #include <unordered_map>
 
+#include "envoy/config/core/v3/config_source.pb.h"
+#include "envoy/extensions/transport_sockets/tls/v3/cert.pb.h"
 #include "envoy/secret/secret_manager.h"
 #include "envoy/secret/secret_provider.h"
 #include "envoy/server/transport_socket_config.h"
@@ -16,7 +18,9 @@ namespace Secret {
 
 class SecretManagerImpl : public SecretManager {
 public:
-  void addStaticSecret(const envoy::api::v2::auth::Secret& secret) override;
+  SecretManagerImpl(Server::ConfigTracker& config_tracker);
+  void
+  addStaticSecret(const envoy::extensions::transport_sockets::tls::v3::Secret& secret) override;
 
   TlsCertificateConfigProviderSharedPtr
   findStaticTlsCertificateProvider(const std::string& name) const override;
@@ -24,30 +28,54 @@ public:
   CertificateValidationContextConfigProviderSharedPtr
   findStaticCertificateValidationContextProvider(const std::string& name) const override;
 
+  TlsSessionTicketKeysConfigProviderSharedPtr
+  findStaticTlsSessionTicketKeysContextProvider(const std::string& name) const override;
+
+  GenericSecretConfigProviderSharedPtr
+  findStaticGenericSecretProvider(const std::string& name) const override;
+
   TlsCertificateConfigProviderSharedPtr createInlineTlsCertificateProvider(
-      const envoy::api::v2::auth::TlsCertificate& tls_certificate) override;
+      const envoy::extensions::transport_sockets::tls::v3::TlsCertificate& tls_certificate)
+      override;
 
   CertificateValidationContextConfigProviderSharedPtr
   createInlineCertificateValidationContextProvider(
-      const envoy::api::v2::auth::CertificateValidationContext& certificate_validation_context)
-      override;
+      const envoy::extensions::transport_sockets::tls::v3::CertificateValidationContext&
+          certificate_validation_context) override;
+
+  TlsSessionTicketKeysConfigProviderSharedPtr createInlineTlsSessionTicketKeysProvider(
+      const envoy::extensions::transport_sockets::tls::v3::TlsSessionTicketKeys&
+          tls_session_ticket_keys) override;
+
+  GenericSecretConfigProviderSharedPtr createInlineGenericSecretProvider(
+      const envoy::extensions::transport_sockets::tls::v3::GenericSecret& generic_secret) override;
 
   TlsCertificateConfigProviderSharedPtr findOrCreateTlsCertificateProvider(
-      const envoy::api::v2::core::ConfigSource& config_source, const std::string& config_name,
+      const envoy::config::core::v3::ConfigSource& config_source, const std::string& config_name,
       Server::Configuration::TransportSocketFactoryContext& secret_provider_context) override;
 
   CertificateValidationContextConfigProviderSharedPtr
   findOrCreateCertificateValidationContextProvider(
-      const envoy::api::v2::core::ConfigSource& config_source, const std::string& config_name,
+      const envoy::config::core::v3::ConfigSource& config_source, const std::string& config_name,
+      Server::Configuration::TransportSocketFactoryContext& secret_provider_context) override;
+
+  TlsSessionTicketKeysConfigProviderSharedPtr findOrCreateTlsSessionTicketKeysContextProvider(
+      const envoy::config::core::v3::ConfigSource& config_source, const std::string& config_name,
+      Server::Configuration::TransportSocketFactoryContext& secret_provider_context) override;
+
+  GenericSecretConfigProviderSharedPtr findOrCreateGenericSecretProvider(
+      const envoy::config::core::v3::ConfigSource& config_source, const std::string& config_name,
       Server::Configuration::TransportSocketFactoryContext& secret_provider_context) override;
 
 private:
+  ProtobufTypes::MessagePtr dumpSecretConfigs();
+
   template <class SecretType>
   class DynamicSecretProviders : public Logger::Loggable<Logger::Id::secret> {
   public:
     // Finds or creates SdsApi object.
     std::shared_ptr<SecretType>
-    findOrCreate(const envoy::api::v2::core::ConfigSource& sds_config_source,
+    findOrCreate(const envoy::config::core::v3::ConfigSource& sds_config_source,
                  const std::string& config_name,
                  Server::Configuration::TransportSocketFactoryContext& secret_provider_context) {
       const std::string map_key =
@@ -66,6 +94,17 @@ private:
         dynamic_secret_providers_[map_key] = secret_provider;
       }
       return secret_provider;
+    }
+
+    std::vector<std::shared_ptr<SecretType>> allSecretProviders() {
+      std::vector<std::shared_ptr<SecretType>> providers;
+      for (const auto& secret_entry : dynamic_secret_providers_) {
+        std::shared_ptr<SecretType> secret_provider = secret_entry.second.lock();
+        if (secret_provider) {
+          providers.push_back(std::move(secret_provider));
+        }
+      }
+      return providers;
     }
 
   private:
@@ -88,9 +127,20 @@ private:
   std::unordered_map<std::string, CertificateValidationContextConfigProviderSharedPtr>
       static_certificate_validation_context_providers_;
 
+  std::unordered_map<std::string, TlsSessionTicketKeysConfigProviderSharedPtr>
+      static_session_ticket_keys_providers_;
+
+  // Manages pairs of secret name and GenericSecretConfigProviderSharedPtr.
+  std::unordered_map<std::string, GenericSecretConfigProviderSharedPtr>
+      static_generic_secret_providers_;
+
   // map hash code of SDS config source and SdsApi object.
   DynamicSecretProviders<TlsCertificateSdsApi> certificate_providers_;
   DynamicSecretProviders<CertificateValidationContextSdsApi> validation_context_providers_;
+  DynamicSecretProviders<TlsSessionTicketKeysSdsApi> session_ticket_keys_providers_;
+  DynamicSecretProviders<GenericSecretSdsApi> generic_secret_providers_;
+
+  Server::ConfigTracker::EntryOwnerPtr config_tracker_entry_;
 };
 
 } // namespace Secret

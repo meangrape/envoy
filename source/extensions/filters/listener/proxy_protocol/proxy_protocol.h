@@ -39,7 +39,7 @@ public:
   ProxyProtocolStats stats_;
 };
 
-typedef std::shared_ptr<Config> ConfigSharedPtr;
+using ConfigSharedPtr = std::shared_ptr<Config>;
 
 enum ProxyProtocolVersion { Unknown = -1, InProgress = -2, V1 = 1, V2 = 2 };
 
@@ -74,12 +74,12 @@ private:
    * throws EnvoyException on any socket errors.
    * @return bool true valid header, false if more data is needed.
    */
-  bool readProxyHeader(int fd);
+  bool readProxyHeader(os_fd_t fd);
 
   /**
    * Parse (and discard unknown) header extensions (until hdr.extensions_length == 0)
    */
-  bool parseExtensions(int fd);
+  bool parseExtensions(os_fd_t fd);
 
   /**
    * Given a char * & len, parse the header as per spec

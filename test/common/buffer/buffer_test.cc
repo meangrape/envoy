@@ -37,13 +37,12 @@ protected:
     EXPECT_NE(nullptr, reservation.mem_);
     EXPECT_EQ(static_cast<const uint8_t*>(slice.data()) + slice.dataSize(), reservation.mem_);
     EXPECT_EQ(reservation_size, reservation.len_);
-    EXPECT_EQ(0, slice.reservableSize());
   }
 
   static void expectReservationFailure(const Slice::Reservation& reservation, const Slice& slice,
                                        uint64_t reservable_size) {
     EXPECT_EQ(nullptr, reservation.mem_);
-    EXPECT_EQ(0, reservation.mem_);
+    EXPECT_EQ(nullptr, reservation.mem_);
     EXPECT_EQ(reservable_size, slice.reservableSize());
   }
 
@@ -88,10 +87,10 @@ TEST_F(OwnedSliceTest, ReserveCommit) {
     expectReservationSuccess(reservation, *slice, 10);
 
     // Request a second reservation while the first reservation remains uncommitted.
-    // This should fail.
-    EXPECT_EQ(0, slice->reservableSize());
+    // This should succeed.
+    EXPECT_EQ(initial_capacity, slice->reservableSize());
     Slice::Reservation reservation2 = slice->reserve(1);
-    expectReservationFailure(reservation2, *slice, 0);
+    expectReservationSuccess(reservation2, *slice, 1);
 
     // Commit the entire reserved size.
     bool committed = slice->commit(reservation);
@@ -209,6 +208,22 @@ TEST(UnownedSliceTest, CreateDelete) {
   EXPECT_TRUE(release_callback_called);
 }
 
+TEST(UnownedSliceTest, CreateDeleteOwnedBufferFragment) {
+  constexpr char input[] = "hello world";
+  bool release_callback_called = false;
+  auto fragment = OwnedBufferFragmentImpl::create(
+      {input, sizeof(input) - 1}, [&release_callback_called](const OwnedBufferFragmentImpl*) {
+        release_callback_called = true;
+      });
+  auto slice = std::make_unique<UnownedSlice>(*fragment);
+  EXPECT_EQ(11, slice->dataSize());
+  EXPECT_EQ(0, slice->reservableSize());
+  EXPECT_EQ(0, memcmp(slice->data(), input, slice->dataSize()));
+  EXPECT_FALSE(release_callback_called);
+  slice.reset(nullptr);
+  EXPECT_TRUE(release_callback_called);
+}
+
 TEST(SliceDequeTest, CreateDelete) {
   bool slice1_deleted = false;
   bool slice2_deleted = false;
@@ -268,15 +283,9 @@ TEST(SliceDequeTest, CreateDelete) {
   EXPECT_TRUE(slice3_deleted);
 }
 
-class BufferHelperTest : public BufferImplementationParamTest {};
-
-INSTANTIATE_TEST_CASE_P(BufferHelperTest, BufferHelperTest,
-                        testing::ValuesIn({BufferImplementation::Old, BufferImplementation::New}));
-
-TEST_P(BufferHelperTest, PeekI8) {
+TEST(BufferHelperTest, PeekI8) {
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addSeq(buffer, {0, 1, 0xFE});
     EXPECT_EQ(buffer.peekInt<int8_t>(), 0);
     EXPECT_EQ(buffer.peekInt<int8_t>(0), 0);
@@ -287,22 +296,19 @@ TEST_P(BufferHelperTest, PeekI8) {
 
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     EXPECT_THROW_WITH_MESSAGE(buffer.peekInt<int8_t>(0), EnvoyException, "buffer underflow");
   }
 
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeByte(0);
     EXPECT_THROW_WITH_MESSAGE(buffer.peekInt<int8_t>(1), EnvoyException, "buffer underflow");
   }
 }
 
-TEST_P(BufferHelperTest, PeekLEI16) {
+TEST(BufferHelperTest, PeekLEI16) {
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addSeq(buffer, {0, 1, 2, 3, 0xFF, 0xFF});
     EXPECT_EQ(buffer.peekLEInt<int16_t>(), 0x0100);
     EXPECT_EQ(buffer.peekLEInt<int16_t>(0), 0x0100);
@@ -314,22 +320,19 @@ TEST_P(BufferHelperTest, PeekLEI16) {
 
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     EXPECT_THROW_WITH_MESSAGE(buffer.peekLEInt<int16_t>(0), EnvoyException, "buffer underflow");
   }
 
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addRepeated(buffer, 2, 0);
     EXPECT_THROW_WITH_MESSAGE(buffer.peekLEInt<int16_t>(1), EnvoyException, "buffer underflow");
   }
 }
 
-TEST_P(BufferHelperTest, PeekLEI32) {
+TEST(BufferHelperTest, PeekLEI32) {
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addSeq(buffer, {0, 1, 2, 3, 0xFF, 0xFF, 0xFF, 0xFF});
     EXPECT_EQ(buffer.peekLEInt<int32_t>(), 0x03020100);
     EXPECT_EQ(buffer.peekLEInt<int32_t>(0), 0x03020100);
@@ -340,22 +343,19 @@ TEST_P(BufferHelperTest, PeekLEI32) {
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     EXPECT_THROW_WITH_MESSAGE(buffer.peekLEInt<int32_t>(0), EnvoyException, "buffer underflow");
   }
 
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addRepeated(buffer, 4, 0);
     EXPECT_THROW_WITH_MESSAGE(buffer.peekLEInt<int32_t>(1), EnvoyException, "buffer underflow");
   }
 }
 
-TEST_P(BufferHelperTest, PeekLEI64) {
+TEST(BufferHelperTest, PeekLEI64) {
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addSeq(buffer, {0, 1, 2, 3, 4, 5, 6, 7, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF});
     EXPECT_EQ(buffer.peekLEInt<int64_t>(), 0x0706050403020100);
     EXPECT_EQ(buffer.peekLEInt<int64_t>(0), 0x0706050403020100);
@@ -375,7 +375,6 @@ TEST_P(BufferHelperTest, PeekLEI64) {
   {
     // signed
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addSeq(buffer, {0xFF, 0xFF, 0xFF, 0x00, 0xFF, 0xFE, 0xFF, 0xFF});
     EXPECT_EQ((buffer.peekLEInt<int64_t, 2>()), -1);
     EXPECT_EQ((buffer.peekLEInt<int64_t, 2>(2)), 255);  // 0x00FF
@@ -385,7 +384,6 @@ TEST_P(BufferHelperTest, PeekLEI64) {
 
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addSeq(buffer, {0, 1, 2, 3, 4, 5, 6, 7, 0xFF, 0xFF});
     EXPECT_THROW_WITH_MESSAGE(
         (buffer.peekLEInt<int64_t, sizeof(int64_t)>(buffer.length() - sizeof(int64_t) + 1)),
@@ -394,22 +392,19 @@ TEST_P(BufferHelperTest, PeekLEI64) {
 
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     EXPECT_THROW_WITH_MESSAGE(buffer.peekLEInt<int64_t>(0), EnvoyException, "buffer underflow");
   }
 
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addRepeated(buffer, 8, 0);
     EXPECT_THROW_WITH_MESSAGE(buffer.peekLEInt<int64_t>(1), EnvoyException, "buffer underflow");
   }
 }
 
-TEST_P(BufferHelperTest, PeekLEU16) {
+TEST(BufferHelperTest, PeekLEU16) {
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addSeq(buffer, {0, 1, 2, 3, 0xFF, 0xFF});
     EXPECT_EQ(buffer.peekLEInt<uint16_t>(), 0x0100);
     EXPECT_EQ(buffer.peekLEInt<uint16_t>(0), 0x0100);
@@ -420,22 +415,19 @@ TEST_P(BufferHelperTest, PeekLEU16) {
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     EXPECT_THROW_WITH_MESSAGE(buffer.peekLEInt<uint16_t>(0), EnvoyException, "buffer underflow");
   }
 
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addRepeated(buffer, 2, 0);
     EXPECT_THROW_WITH_MESSAGE(buffer.peekLEInt<uint16_t>(1), EnvoyException, "buffer underflow");
   }
 }
 
-TEST_P(BufferHelperTest, PeekLEU32) {
+TEST(BufferHelperTest, PeekLEU32) {
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addSeq(buffer, {0, 1, 2, 3, 0xFF, 0xFF, 0xFF, 0xFF});
     EXPECT_EQ(buffer.peekLEInt<uint32_t>(), 0x03020100);
     EXPECT_EQ(buffer.peekLEInt<uint32_t>(0), 0x03020100);
@@ -446,22 +438,19 @@ TEST_P(BufferHelperTest, PeekLEU32) {
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     EXPECT_THROW_WITH_MESSAGE(buffer.peekLEInt<uint32_t>(0), EnvoyException, "buffer underflow");
   }
 
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addRepeated(buffer, 4, 0);
     EXPECT_THROW_WITH_MESSAGE(buffer.peekLEInt<uint32_t>(1), EnvoyException, "buffer underflow");
   }
 }
 
-TEST_P(BufferHelperTest, PeekLEU64) {
+TEST(BufferHelperTest, PeekLEU64) {
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addSeq(buffer, {0, 1, 2, 3, 4, 5, 6, 7, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF});
     EXPECT_EQ(buffer.peekLEInt<uint64_t>(), 0x0706050403020100);
     EXPECT_EQ(buffer.peekLEInt<uint64_t>(0), 0x0706050403020100);
@@ -472,22 +461,19 @@ TEST_P(BufferHelperTest, PeekLEU64) {
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     EXPECT_THROW_WITH_MESSAGE(buffer.peekLEInt<uint64_t>(0), EnvoyException, "buffer underflow");
   }
 
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addRepeated(buffer, 8, 0);
     EXPECT_THROW_WITH_MESSAGE(buffer.peekLEInt<uint64_t>(1), EnvoyException, "buffer underflow");
   }
 }
 
-TEST_P(BufferHelperTest, PeekBEI16) {
+TEST(BufferHelperTest, PeekBEI16) {
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addSeq(buffer, {0, 1, 2, 3, 0xFF, 0xFF});
     EXPECT_EQ(buffer.peekBEInt<int16_t>(), 1);
     EXPECT_EQ(buffer.peekBEInt<int16_t>(0), 1);
@@ -499,22 +485,19 @@ TEST_P(BufferHelperTest, PeekBEI16) {
 
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     EXPECT_THROW_WITH_MESSAGE(buffer.peekBEInt<int16_t>(0), EnvoyException, "buffer underflow");
   }
 
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addRepeated(buffer, 2, 0);
     EXPECT_THROW_WITH_MESSAGE(buffer.peekBEInt<int16_t>(1), EnvoyException, "buffer underflow");
   }
 }
 
-TEST_P(BufferHelperTest, PeekBEI32) {
+TEST(BufferHelperTest, PeekBEI32) {
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addSeq(buffer, {0, 1, 2, 3, 0xFF, 0xFF, 0xFF, 0xFF});
     EXPECT_EQ(buffer.peekBEInt<int32_t>(), 0x00010203);
     EXPECT_EQ(buffer.peekBEInt<int32_t>(0), 0x00010203);
@@ -525,22 +508,19 @@ TEST_P(BufferHelperTest, PeekBEI32) {
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     EXPECT_THROW_WITH_MESSAGE(buffer.peekBEInt<int32_t>(0), EnvoyException, "buffer underflow");
   }
 
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addRepeated(buffer, 4, 0);
     EXPECT_THROW_WITH_MESSAGE(buffer.peekBEInt<int32_t>(1), EnvoyException, "buffer underflow");
   }
 }
 
-TEST_P(BufferHelperTest, PeekBEI64) {
+TEST(BufferHelperTest, PeekBEI64) {
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addSeq(buffer, {0, 1, 2, 3, 4, 5, 6, 7, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF});
     EXPECT_EQ(buffer.peekBEInt<int64_t>(), 0x0001020304050607);
     EXPECT_EQ(buffer.peekBEInt<int64_t>(0), 0x0001020304050607);
@@ -559,7 +539,6 @@ TEST_P(BufferHelperTest, PeekBEI64) {
   {
     // signed
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addSeq(buffer, {0xFF, 0xFF, 0xFF, 0x00, 0xFF, 0xFF, 0xFF, 0xFE});
     EXPECT_EQ((buffer.peekBEInt<int64_t, 2>()), -1);
     EXPECT_EQ((buffer.peekBEInt<int64_t, 2>(2)), -256); // 0xFF00
@@ -569,7 +548,6 @@ TEST_P(BufferHelperTest, PeekBEI64) {
 
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addSeq(buffer, {0, 1, 2, 3, 4, 5, 6, 7, 0xFF, 0xFF});
     EXPECT_THROW_WITH_MESSAGE(
         (buffer.peekBEInt<int64_t, sizeof(int64_t)>(buffer.length() - sizeof(int64_t) + 1)),
@@ -578,22 +556,19 @@ TEST_P(BufferHelperTest, PeekBEI64) {
 
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     EXPECT_THROW_WITH_MESSAGE(buffer.peekBEInt<int64_t>(0), EnvoyException, "buffer underflow");
   }
 
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addRepeated(buffer, 8, 0);
     EXPECT_THROW_WITH_MESSAGE(buffer.peekBEInt<int64_t>(1), EnvoyException, "buffer underflow");
   }
 }
 
-TEST_P(BufferHelperTest, PeekBEU16) {
+TEST(BufferHelperTest, PeekBEU16) {
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addSeq(buffer, {0, 1, 2, 3, 0xFF, 0xFF});
     EXPECT_EQ(buffer.peekBEInt<uint16_t>(), 1);
     EXPECT_EQ(buffer.peekBEInt<uint16_t>(0), 1);
@@ -604,22 +579,19 @@ TEST_P(BufferHelperTest, PeekBEU16) {
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     EXPECT_THROW_WITH_MESSAGE(buffer.peekBEInt<uint16_t>(0), EnvoyException, "buffer underflow");
   }
 
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addRepeated(buffer, 2, 0);
     EXPECT_THROW_WITH_MESSAGE(buffer.peekBEInt<uint16_t>(1), EnvoyException, "buffer underflow");
   }
 }
 
-TEST_P(BufferHelperTest, PeekBEU32) {
+TEST(BufferHelperTest, PeekBEU32) {
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addSeq(buffer, {0, 1, 2, 3, 0xFF, 0xFF, 0xFF, 0xFF});
     EXPECT_EQ(buffer.peekBEInt<uint32_t>(), 0x00010203);
     EXPECT_EQ(buffer.peekBEInt<uint32_t>(0), 0x00010203);
@@ -630,22 +602,19 @@ TEST_P(BufferHelperTest, PeekBEU32) {
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     EXPECT_THROW_WITH_MESSAGE(buffer.peekBEInt<uint32_t>(0), EnvoyException, "buffer underflow");
   }
 
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addRepeated(buffer, 4, 0);
     EXPECT_THROW_WITH_MESSAGE(buffer.peekBEInt<uint32_t>(1), EnvoyException, "buffer underflow");
   }
 }
 
-TEST_P(BufferHelperTest, PeekBEU64) {
+TEST(BufferHelperTest, PeekBEU64) {
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addSeq(buffer, {0, 1, 2, 3, 4, 5, 6, 7, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF});
     EXPECT_EQ(buffer.peekBEInt<uint64_t>(), 0x0001020304050607);
     EXPECT_EQ(buffer.peekBEInt<uint64_t>(0), 0x0001020304050607);
@@ -656,21 +625,18 @@ TEST_P(BufferHelperTest, PeekBEU64) {
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     EXPECT_THROW_WITH_MESSAGE(buffer.peekBEInt<uint64_t>(0), EnvoyException, "buffer underflow");
   }
 
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     addRepeated(buffer, 8, 0);
     EXPECT_THROW_WITH_MESSAGE(buffer.peekBEInt<uint64_t>(1), EnvoyException, "buffer underflow");
   }
 }
 
-TEST_P(BufferHelperTest, DrainI8) {
+TEST(BufferHelperTest, DrainI8) {
   Buffer::OwnedImpl buffer;
-  verifyImplementation(buffer);
   addSeq(buffer, {0, 1, 0xFE});
   EXPECT_EQ(buffer.drainInt<int8_t>(), 0);
   EXPECT_EQ(buffer.drainInt<int8_t>(), 1);
@@ -678,9 +644,8 @@ TEST_P(BufferHelperTest, DrainI8) {
   EXPECT_EQ(buffer.length(), 0);
 }
 
-TEST_P(BufferHelperTest, DrainLEI16) {
+TEST(BufferHelperTest, DrainLEI16) {
   Buffer::OwnedImpl buffer;
-  verifyImplementation(buffer);
   addSeq(buffer, {0, 1, 2, 3, 0xFF, 0xFF});
   EXPECT_EQ(buffer.drainLEInt<int16_t>(), 0x0100);
   EXPECT_EQ(buffer.drainLEInt<int16_t>(), 0x0302);
@@ -688,45 +653,40 @@ TEST_P(BufferHelperTest, DrainLEI16) {
   EXPECT_EQ(buffer.length(), 0);
 }
 
-TEST_P(BufferHelperTest, DrainLEI32) {
+TEST(BufferHelperTest, DrainLEI32) {
   Buffer::OwnedImpl buffer;
-  verifyImplementation(buffer);
   addSeq(buffer, {0, 1, 2, 3, 0xFF, 0xFF, 0xFF, 0xFF});
   EXPECT_EQ(buffer.drainLEInt<int32_t>(), 0x03020100);
   EXPECT_EQ(buffer.drainLEInt<int32_t>(), -1);
   EXPECT_EQ(buffer.length(), 0);
 }
 
-TEST_P(BufferHelperTest, DrainLEI64) {
+TEST(BufferHelperTest, DrainLEI64) {
   Buffer::OwnedImpl buffer;
-  verifyImplementation(buffer);
   addSeq(buffer, {0, 1, 2, 3, 4, 5, 6, 7, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF});
   EXPECT_EQ(buffer.drainLEInt<int64_t>(), 0x0706050403020100);
   EXPECT_EQ(buffer.drainLEInt<int64_t>(), -1);
   EXPECT_EQ(buffer.length(), 0);
 }
 
-TEST_P(BufferHelperTest, DrainLEU32) {
+TEST(BufferHelperTest, DrainLEU32) {
   Buffer::OwnedImpl buffer;
-  verifyImplementation(buffer);
   addSeq(buffer, {0, 1, 2, 3, 0xFF, 0xFF, 0xFF, 0xFF});
   EXPECT_EQ(buffer.drainLEInt<uint32_t>(), 0x03020100);
   EXPECT_EQ(buffer.drainLEInt<uint32_t>(), 0xFFFFFFFF);
   EXPECT_EQ(buffer.length(), 0);
 }
 
-TEST_P(BufferHelperTest, DrainLEU64) {
+TEST(BufferHelperTest, DrainLEU64) {
   Buffer::OwnedImpl buffer;
-  verifyImplementation(buffer);
   addSeq(buffer, {0, 1, 2, 3, 4, 5, 6, 7, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF});
   EXPECT_EQ(buffer.drainLEInt<uint64_t>(), 0x0706050403020100);
   EXPECT_EQ(buffer.drainLEInt<uint64_t>(), 0xFFFFFFFFFFFFFFFF);
   EXPECT_EQ(buffer.length(), 0);
 }
 
-TEST_P(BufferHelperTest, DrainBEI16) {
+TEST(BufferHelperTest, DrainBEI16) {
   Buffer::OwnedImpl buffer;
-  verifyImplementation(buffer);
   addSeq(buffer, {0, 1, 2, 3, 0xFF, 0xFF});
   EXPECT_EQ(buffer.drainBEInt<int16_t>(), 1);
   EXPECT_EQ(buffer.drainBEInt<int16_t>(), 0x0203);
@@ -734,45 +694,40 @@ TEST_P(BufferHelperTest, DrainBEI16) {
   EXPECT_EQ(buffer.length(), 0);
 }
 
-TEST_P(BufferHelperTest, DrainBEI32) {
+TEST(BufferHelperTest, DrainBEI32) {
   Buffer::OwnedImpl buffer;
-  verifyImplementation(buffer);
   addSeq(buffer, {0, 1, 2, 3, 0xFF, 0xFF, 0xFF, 0xFF});
   EXPECT_EQ(buffer.drainBEInt<int32_t>(), 0x00010203);
   EXPECT_EQ(buffer.drainBEInt<int32_t>(), -1);
   EXPECT_EQ(buffer.length(), 0);
 }
 
-TEST_P(BufferHelperTest, DrainBEI64) {
+TEST(BufferHelperTest, DrainBEI64) {
   Buffer::OwnedImpl buffer;
-  verifyImplementation(buffer);
   addSeq(buffer, {0, 1, 2, 3, 4, 5, 6, 7, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF});
   EXPECT_EQ(buffer.drainBEInt<int64_t>(), 0x0001020304050607);
   EXPECT_EQ(buffer.drainBEInt<int64_t>(), -1);
   EXPECT_EQ(buffer.length(), 0);
 }
 
-TEST_P(BufferHelperTest, DrainBEU32) {
+TEST(BufferHelperTest, DrainBEU32) {
   Buffer::OwnedImpl buffer;
-  verifyImplementation(buffer);
   addSeq(buffer, {0, 1, 2, 3, 0xFF, 0xFF, 0xFF, 0xFF});
   EXPECT_EQ(buffer.drainBEInt<uint32_t>(), 0x00010203);
   EXPECT_EQ(buffer.drainBEInt<uint32_t>(), 0xFFFFFFFF);
   EXPECT_EQ(buffer.length(), 0);
 }
 
-TEST_P(BufferHelperTest, DrainBEU64) {
+TEST(BufferHelperTest, DrainBEU64) {
   Buffer::OwnedImpl buffer;
-  verifyImplementation(buffer);
   addSeq(buffer, {0, 1, 2, 3, 4, 5, 6, 7, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF});
   EXPECT_EQ(buffer.drainBEInt<uint64_t>(), 0x0001020304050607);
   EXPECT_EQ(buffer.drainBEInt<uint64_t>(), 0xFFFFFFFFFFFFFFFF);
   EXPECT_EQ(buffer.length(), 0);
 }
 
-TEST_P(BufferHelperTest, WriteI8) {
+TEST(BufferHelperTest, WriteI8) {
   Buffer::OwnedImpl buffer;
-  verifyImplementation(buffer);
   buffer.writeByte(-128);
   buffer.writeByte(-1);
   buffer.writeByte(0);
@@ -782,269 +737,229 @@ TEST_P(BufferHelperTest, WriteI8) {
   EXPECT_EQ(std::string("\x80\xFF\0\x1\x7F", 5), buffer.toString());
 }
 
-TEST_P(BufferHelperTest, WriteLEI16) {
+TEST(BufferHelperTest, WriteLEI16) {
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeLEInt<int16_t>(std::numeric_limits<int16_t>::min());
     EXPECT_EQ(std::string("\0\x80", 2), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeLEInt<int16_t>(0);
     EXPECT_EQ(std::string("\0\0", 2), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeLEInt<int16_t>(1);
     EXPECT_EQ(std::string("\x1\0", 2), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeLEInt<int16_t>(std::numeric_limits<int16_t>::max());
     EXPECT_EQ("\xFF\x7F", buffer.toString());
   }
 }
 
-TEST_P(BufferHelperTest, WriteLEU16) {
+TEST(BufferHelperTest, WriteLEU16) {
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeLEInt<uint16_t>(0);
     EXPECT_EQ(std::string("\0\0", 2), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeLEInt<uint16_t>(1);
     EXPECT_EQ(std::string("\x1\0", 2), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeLEInt<uint16_t>(static_cast<uint16_t>(std::numeric_limits<int16_t>::max()) + 1);
     EXPECT_EQ(std::string("\0\x80", 2), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeLEInt<uint16_t>(std::numeric_limits<uint16_t>::max());
     EXPECT_EQ("\xFF\xFF", buffer.toString());
   }
 }
 
-TEST_P(BufferHelperTest, WriteLEI32) {
+TEST(BufferHelperTest, WriteLEI32) {
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeLEInt<int32_t>(std::numeric_limits<int32_t>::min());
     EXPECT_EQ(std::string("\0\0\0\x80", 4), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeLEInt<int32_t>(0);
     EXPECT_EQ(std::string("\0\0\0\0", 4), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeLEInt<int32_t>(1);
     EXPECT_EQ(std::string("\x1\0\0\0", 4), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeLEInt<int32_t>(std::numeric_limits<int32_t>::max());
     EXPECT_EQ("\xFF\xFF\xFF\x7F", buffer.toString());
   }
 }
 
-TEST_P(BufferHelperTest, WriteLEU32) {
+TEST(BufferHelperTest, WriteLEU32) {
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeLEInt<uint32_t>(0);
     EXPECT_EQ(std::string("\0\0\0\0", 4), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeLEInt<uint32_t>(1);
     EXPECT_EQ(std::string("\x1\0\0\0", 4), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeLEInt<uint32_t>(static_cast<uint32_t>(std::numeric_limits<int32_t>::max()) + 1);
     EXPECT_EQ(std::string("\0\0\0\x80", 4), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeLEInt<uint32_t>(std::numeric_limits<uint32_t>::max());
     EXPECT_EQ("\xFF\xFF\xFF\xFF", buffer.toString());
   }
 }
-TEST_P(BufferHelperTest, WriteLEI64) {
+TEST(BufferHelperTest, WriteLEI64) {
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeLEInt<int64_t>(std::numeric_limits<int64_t>::min());
     EXPECT_EQ(std::string("\0\0\0\0\0\0\0\x80", 8), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeLEInt<int64_t>(1);
     EXPECT_EQ(std::string("\x1\0\0\0\0\0\0\0", 8), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeLEInt<int64_t>(0);
     EXPECT_EQ(std::string("\0\0\0\0\0\0\0\0", 8), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeLEInt<int64_t>(std::numeric_limits<int64_t>::max());
     EXPECT_EQ("\xFF\xFF\xFF\xFF\xFF\xFF\xFF\x7F", buffer.toString());
   }
 }
 
-TEST_P(BufferHelperTest, WriteBEI16) {
+TEST(BufferHelperTest, WriteBEI16) {
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeBEInt<int16_t>(std::numeric_limits<int16_t>::min());
     EXPECT_EQ(std::string("\x80\0", 2), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeBEInt<int16_t>(0);
     EXPECT_EQ(std::string("\0\0", 2), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeBEInt<int16_t>(1);
     EXPECT_EQ(std::string("\0\x1", 2), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeBEInt<int16_t>(std::numeric_limits<int16_t>::max());
     EXPECT_EQ("\x7F\xFF", buffer.toString());
   }
 }
 
-TEST_P(BufferHelperTest, WriteBEU16) {
+TEST(BufferHelperTest, WriteBEU16) {
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeBEInt<uint16_t>(0);
     EXPECT_EQ(std::string("\0\0", 2), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeBEInt<uint16_t>(1);
     EXPECT_EQ(std::string("\0\x1", 2), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeBEInt<uint16_t>(static_cast<uint16_t>(std::numeric_limits<int16_t>::max()) + 1);
     EXPECT_EQ(std::string("\x80\0", 2), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeBEInt<uint16_t>(std::numeric_limits<uint16_t>::max());
     EXPECT_EQ("\xFF\xFF", buffer.toString());
   }
 }
 
-TEST_P(BufferHelperTest, WriteBEI32) {
+TEST(BufferHelperTest, WriteBEI32) {
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeBEInt<int32_t>(std::numeric_limits<int32_t>::min());
     EXPECT_EQ(std::string("\x80\0\0\0", 4), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeBEInt<int32_t>(0);
     EXPECT_EQ(std::string("\0\0\0\0", 4), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeBEInt<int32_t>(1);
     EXPECT_EQ(std::string("\0\0\0\x1", 4), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeBEInt<int32_t>(std::numeric_limits<int32_t>::max());
     EXPECT_EQ("\x7F\xFF\xFF\xFF", buffer.toString());
   }
 }
 
-TEST_P(BufferHelperTest, WriteBEU32) {
+TEST(BufferHelperTest, WriteBEU32) {
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeBEInt<uint32_t>(0);
     EXPECT_EQ(std::string("\0\0\0\0", 4), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeBEInt<uint32_t>(1);
     EXPECT_EQ(std::string("\0\0\0\x1", 4), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeBEInt<uint32_t>(static_cast<uint32_t>(std::numeric_limits<int32_t>::max()) + 1);
     EXPECT_EQ(std::string("\x80\0\0\0", 4), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeBEInt<uint32_t>(std::numeric_limits<uint32_t>::max());
     EXPECT_EQ("\xFF\xFF\xFF\xFF", buffer.toString());
   }
 }
-TEST_P(BufferHelperTest, WriteBEI64) {
+TEST(BufferHelperTest, WriteBEI64) {
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeBEInt<int64_t>(std::numeric_limits<int64_t>::min());
     EXPECT_EQ(std::string("\x80\0\0\0\0\0\0\0\0", 8), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeBEInt<int64_t>(1);
     EXPECT_EQ(std::string("\0\0\0\0\0\0\0\x1", 8), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeBEInt<int64_t>(0);
     EXPECT_EQ(std::string("\0\0\0\0\0\0\0\0", 8), buffer.toString());
   }
   {
     Buffer::OwnedImpl buffer;
-    verifyImplementation(buffer);
     buffer.writeBEInt<int64_t>(std::numeric_limits<int64_t>::max());
     EXPECT_EQ("\x7F\xFF\xFF\xFF\xFF\xFF\xFF\xFF", buffer.toString());
   }

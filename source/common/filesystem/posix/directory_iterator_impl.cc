@@ -7,7 +7,7 @@ namespace Envoy {
 namespace Filesystem {
 
 DirectoryIteratorImpl::DirectoryIteratorImpl(const std::string& directory_path)
-    : DirectoryIterator(), directory_path_(directory_path), dir_(nullptr),
+    : directory_path_(directory_path), dir_(nullptr),
       os_sys_calls_(Api::OsSysCallsSingleton::get()) {
   openDirectory();
   nextEntry();
@@ -55,7 +55,16 @@ FileType DirectoryIteratorImpl::fileType(const std::string& full_path) const {
 
   const Api::SysCallIntResult result = os_sys_calls_.stat(full_path.c_str(), &stat_buf);
   if (result.rc_ != 0) {
-    throw EnvoyException(fmt::format("unable to stat file: '{}'", full_path));
+    if (errno == ENOENT) {
+      // Special case. This directory entity is likely to be a symlink,
+      // but the reference is broken as the target could not be stat()'ed.
+      // If we confirm this with an lstat, treat this file entity as
+      // a regular file, which may be unlink()'ed.
+      if (::lstat(full_path.c_str(), &stat_buf) == 0 && S_ISLNK(stat_buf.st_mode)) {
+        return FileType::Regular;
+      }
+    }
+    throw EnvoyException(fmt::format("unable to stat file: '{}' ({})", full_path, errno));
   }
 
   if (S_ISDIR(stat_buf.st_mode)) {

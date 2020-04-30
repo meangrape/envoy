@@ -23,6 +23,7 @@ envoy_cc_test(
 envoy_cc_test(
     name = "wrappers_test",
     srcs = ["wrappers_test.cc"],
+    tags = ["fails_on_windows"],
     deps = [
         ":lua_wrappers_lib",
         "//source/common/buffer:buffer_lib",
@@ -30,6 +31,7 @@ envoy_cc_test(
         "//test/mocks/network:network_mocks",
         "//test/mocks/ssl:ssl_mocks",
         "//test/test_common:utility_lib",
+        "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
     ],
 )
 

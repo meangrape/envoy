@@ -2,7 +2,7 @@
 
 #include <sstream>
 
-#include "envoy/stats/store.h"
+#include "envoy/stats/scope.h"
 
 #include "common/common/assert.h"
 #include "common/common/base64.h"
@@ -26,7 +26,7 @@ public:
                                   opentracing::string_view value) const override {
     Http::LowerCaseString lowercase_key{key};
     request_headers_.remove(lowercase_key);
-    request_headers_.addCopy(std::move(lowercase_key), value);
+    request_headers_.addCopy(std::move(lowercase_key), {value.data(), value.size()});
     return {};
   }
 
@@ -36,12 +36,11 @@ private:
 
 class OpenTracingHTTPHeadersReader : public opentracing::HTTPHeadersReader {
 public:
-  explicit OpenTracingHTTPHeadersReader(const Http::HeaderMap& request_headers)
+  explicit OpenTracingHTTPHeadersReader(const Http::RequestHeaderMap& request_headers)
       : request_headers_(request_headers) {}
 
-  typedef std::function<opentracing::expected<void>(opentracing::string_view,
-                                                    opentracing::string_view)>
-      OpenTracingCb;
+  using OpenTracingCb = std::function<opentracing::expected<void>(opentracing::string_view,
+                                                                  opentracing::string_view)>;
 
   // opentracing::HTTPHeadersReader
   opentracing::expected<opentracing::string_view>
@@ -51,7 +50,8 @@ public:
         request_headers_.lookup(Http::LowerCaseString{key}, &entry);
     switch (lookup_result) {
     case Http::HeaderMap::Lookup::Found:
-      return opentracing::string_view{entry->value().c_str(), entry->value().size()};
+      return opentracing::string_view{entry->value().getStringView().data(),
+                                      entry->value().getStringView().length()};
     case Http::HeaderMap::Lookup::NotFound:
       return opentracing::make_unexpected(opentracing::key_not_found_error);
     case Http::HeaderMap::Lookup::NotSupported:
@@ -66,13 +66,15 @@ public:
   }
 
 private:
-  const Http::HeaderMap& request_headers_;
+  const Http::RequestHeaderMap& request_headers_;
 
   static Http::HeaderMap::Iterate headerMapCallback(const Http::HeaderEntry& header,
                                                     void* context) {
-    OpenTracingCb* callback = static_cast<OpenTracingCb*>(context);
-    opentracing::string_view key{header.key().c_str(), header.key().size()};
-    opentracing::string_view value{header.value().c_str(), header.value().size()};
+    auto* callback = static_cast<OpenTracingCb*>(context);
+    opentracing::string_view key{header.key().getStringView().data(),
+                                 header.key().getStringView().length()};
+    opentracing::string_view value{header.value().getStringView().data(),
+                                   header.value().getStringView().length()};
     if ((*callback)(key, value)) {
       return Http::HeaderMap::Iterate::Continue;
     } else {
@@ -88,20 +90,21 @@ OpenTracingSpan::OpenTracingSpan(OpenTracingDriver& driver,
 
 void OpenTracingSpan::finishSpan() { span_->FinishWithOptions(finish_options_); }
 
-void OpenTracingSpan::setOperation(const std::string& operation) {
-  span_->SetOperationName(operation);
+void OpenTracingSpan::setOperation(absl::string_view operation) {
+  span_->SetOperationName({operation.data(), operation.length()});
 }
 
-void OpenTracingSpan::setTag(const std::string& name, const std::string& value) {
-  span_->SetTag(name, value);
+void OpenTracingSpan::setTag(absl::string_view name, absl::string_view value) {
+  span_->SetTag({name.data(), name.length()},
+                opentracing::v2::string_view{value.data(), value.length()});
 }
 
 void OpenTracingSpan::log(SystemTime timestamp, const std::string& event) {
-  opentracing::LogRecord record{timestamp, {{Tracing::Logs::get().EVENT_KEY, event}}};
+  opentracing::LogRecord record{timestamp, {{Tracing::Logs::get().EventKey, event}}};
   finish_options_.log_records.emplace_back(std::move(record));
 }
 
-void OpenTracingSpan::injectContext(Http::HeaderMap& request_headers) {
+void OpenTracingSpan::injectContext(Http::RequestHeaderMap& request_headers) {
   if (driver_.propagationMode() == OpenTracingDriver::PropagationMode::SingleHeader) {
     // Inject the span context using Envoy's single-header format.
     std::ostringstream oss;
@@ -113,7 +116,7 @@ void OpenTracingSpan::injectContext(Http::HeaderMap& request_headers) {
       return;
     }
     const std::string current_span_context = oss.str();
-    request_headers.insertOtSpanContext().value(
+    request_headers.setOtSpanContext(
         Base64::encode(current_span_context.c_str(), current_span_context.length()));
   } else {
     // Inject the context using the tracer's standard HTTP header format.
@@ -140,11 +143,11 @@ Tracing::SpanPtr OpenTracingSpan::spawnChild(const Tracing::Config&, const std::
   return Tracing::SpanPtr{new OpenTracingSpan{driver_, std::move(ot_span)}};
 }
 
-OpenTracingDriver::OpenTracingDriver(Stats::Store& stats)
-    : tracer_stats_{OPENTRACING_TRACER_STATS(POOL_COUNTER_PREFIX(stats, "tracing.opentracing."))} {}
+OpenTracingDriver::OpenTracingDriver(Stats::Scope& scope)
+    : tracer_stats_{OPENTRACING_TRACER_STATS(POOL_COUNTER_PREFIX(scope, "tracing.opentracing."))} {}
 
 Tracing::SpanPtr OpenTracingDriver::startSpan(const Tracing::Config& config,
-                                              Http::HeaderMap& request_headers,
+                                              Http::RequestHeaderMap& request_headers,
                                               const std::string& operation_name,
                                               SystemTime start_time,
                                               const Tracing::Decision tracing_decision) {
@@ -154,7 +157,8 @@ Tracing::SpanPtr OpenTracingDriver::startSpan(const Tracing::Config& config,
   std::unique_ptr<opentracing::SpanContext> parent_span_ctx;
   if (propagation_mode == PropagationMode::SingleHeader && request_headers.OtSpanContext()) {
     opentracing::expected<std::unique_ptr<opentracing::SpanContext>> parent_span_ctx_maybe;
-    std::string parent_context = Base64::decode(request_headers.OtSpanContext()->value().c_str());
+    std::string parent_context =
+        Base64::decode(std::string(request_headers.OtSpanContext()->value().getStringView()));
 
     if (!parent_context.empty()) {
       InputConstMemoryStream istream{parent_context.data(), parent_context.size()};

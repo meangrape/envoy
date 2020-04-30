@@ -1,20 +1,28 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
+#include <limits>
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 #include "envoy/common/pure.h"
-#include "envoy/type/percent.pb.h"
+#include "envoy/type/v3/percent.pb.h"
 
 #include "common/common/assert.h"
 #include "common/singleton/threadsafe_singleton.h"
 
+#include "absl/container/flat_hash_map.h"
 #include "absl/types/optional.h"
 
 namespace Envoy {
+
+namespace Upstream {
+class ClusterManager;
+}
+
 namespace Runtime {
 
 /**
@@ -22,12 +30,32 @@ namespace Runtime {
  */
 class RandomGenerator {
 public:
-  virtual ~RandomGenerator() {}
+  virtual ~RandomGenerator() = default;
+
+  using result_type = uint64_t; // NOLINT(readability-identifier-naming)
 
   /**
    * @return uint64_t a new random number.
    */
-  virtual uint64_t random() PURE;
+  virtual result_type random() PURE;
+
+  /*
+   * @return the smallest value that `operator()` may return. The value is
+   * strictly less than `max()`.
+   */
+  constexpr static result_type min() noexcept { return std::numeric_limits<result_type>::min(); };
+
+  /*
+   * @return the largest value that `operator()` may return. The value is
+   * strictly greater than `min()`.
+   */
+  constexpr static result_type max() noexcept { return std::numeric_limits<result_type>::max(); };
+
+  /*
+   * @return a value in the closed interval `[min(), max()]`. Has amortized
+   * constant complexity.
+   */
+  result_type operator()() { return result_type(random()); };
 
   /**
    * @return std::string containing uuid4 of 36 char length.
@@ -36,23 +64,24 @@ public:
   virtual std::string uuid() PURE;
 };
 
-typedef std::unique_ptr<RandomGenerator> RandomGeneratorPtr;
+using RandomGeneratorPtr = std::unique_ptr<RandomGenerator>;
 
 /**
  * A snapshot of runtime data.
  */
 class Snapshot {
 public:
-  virtual ~Snapshot() {}
+  virtual ~Snapshot() = default;
 
   struct Entry {
     std::string raw_string_value_;
     absl::optional<uint64_t> uint_value_;
-    absl::optional<envoy::type::FractionalPercent> fractional_percent_value_;
+    absl::optional<double> double_value_;
+    absl::optional<envoy::type::v3::FractionalPercent> fractional_percent_value_;
     absl::optional<bool> bool_value_;
   };
 
-  typedef std::unordered_map<std::string, Entry> EntryMap;
+  using EntryMap = absl::flat_hash_map<std::string, Entry>;
 
   /**
    * A provider of runtime values. One or more of these compose the snapshot's source of values,
@@ -60,12 +89,12 @@ public:
    */
   class OverrideLayer {
   public:
-    virtual ~OverrideLayer() {}
+    virtual ~OverrideLayer() = default;
 
     /**
-     * @return const std::unordered_map<std::string, Entry>& the values in this layer.
+     * @return const absl::flat_hash_map<std::string, Entry>& the values in this layer.
      */
-    virtual const std::unordered_map<std::string, Snapshot::Entry>& values() const PURE;
+    virtual const EntryMap& values() const PURE;
 
     /**
      * @return const std::string& a user-friendly alias for this layer, e.g. "admin" or "disk".
@@ -73,22 +102,27 @@ public:
     virtual const std::string& name() const PURE;
   };
 
-  typedef std::unique_ptr<const OverrideLayer> OverrideLayerConstPtr;
+  using OverrideLayerConstPtr = std::unique_ptr<const OverrideLayer>;
 
-  // Returns true if a deprecated feature is allowed.
-  //
-  // Fundamentally, deprecated features are boolean values.
-  // They are allowed by default or with explicit configuration to "true" via runtime configuration.
-  // They can be disallowed either by inclusion in the hard-coded disallowed_features[] list, or by
-  // configuration of "false" in runtime config.
-  virtual bool deprecatedFeatureEnabled(const std::string& key) const PURE;
+  /**
+   * Returns true if a deprecated feature is allowed.
+   *
+   * Fundamentally, deprecated features are boolean values.
+   * They are allowed by default or with explicit configuration to "true" via runtime configuration.
+   * They can be disallowed either by inclusion in the hard-coded disallowed_features[] list, or by
+   * configuration of "false" in runtime config.
+   * @param key supplies the key to lookup.
+   * @param default_value supplies the default value that will be used if either the key
+   *        does not exist or it is not a boolean.
+   */
+  virtual bool deprecatedFeatureEnabled(absl::string_view key, bool default_enabled) const PURE;
 
   // Returns true if a runtime feature is enabled.
   //
   // Runtime features are used to easily allow switching between old and new code paths for high
   // risk changes. The intent is for the old code path to be short lived - the old code path is
   // deprecated as the feature is defaulted true, and removed with the following Envoy release.
-  virtual bool runtimeFeatureEnabled(const std::string& key) const PURE;
+  virtual bool runtimeFeatureEnabled(absl::string_view key) const PURE;
 
   /**
    * Test if a feature is enabled using the built in random generator. This is done by generating
@@ -102,7 +136,7 @@ public:
    *        does not exist or it is not an integer.
    * @return true if the feature is enabled.
    */
-  virtual bool featureEnabled(const std::string& key, uint64_t default_value) const PURE;
+  virtual bool featureEnabled(absl::string_view key, uint64_t default_value) const PURE;
 
   /**
    * Test if a feature is enabled using a supplied stable random value. This variant is used if
@@ -114,7 +148,7 @@ public:
    *        is enabled.
    * @return true if the feature is enabled.
    */
-  virtual bool featureEnabled(const std::string& key, uint64_t default_value,
+  virtual bool featureEnabled(absl::string_view key, uint64_t default_value,
                               uint64_t random_value) const PURE;
 
   /**
@@ -131,7 +165,7 @@ public:
    *        of [0, num_buckets).
    * @return true if the feature is enabled.
    */
-  virtual bool featureEnabled(const std::string& key, uint64_t default_value, uint64_t random_value,
+  virtual bool featureEnabled(absl::string_view key, uint64_t default_value, uint64_t random_value,
                               uint64_t num_buckets) const PURE;
 
   /**
@@ -151,8 +185,8 @@ public:
    *        does not exist or it is not a fractional percent.
    * @return true if the feature is enabled.
    */
-  virtual bool featureEnabled(const std::string& key,
-                              const envoy::type::FractionalPercent& default_value) const PURE;
+  virtual bool featureEnabled(absl::string_view key,
+                              const envoy::type::v3::FractionalPercent& default_value) const PURE;
 
   /**
    * Test if a feature is enabled using a supplied stable random value. This variant is used if
@@ -168,25 +202,45 @@ public:
    *        is enabled.
    * @return true if the feature is enabled.
    */
-  virtual bool featureEnabled(const std::string& key,
-                              const envoy::type::FractionalPercent& default_value,
+  virtual bool featureEnabled(absl::string_view key,
+                              const envoy::type::v3::FractionalPercent& default_value,
                               uint64_t random_value) const PURE;
 
+  using ConstStringOptRef = absl::optional<std::reference_wrapper<const std::string>>;
   /**
    * Fetch raw runtime data based on key.
    * @param key supplies the key to fetch.
-   * @return const std::string& the value or empty string if the key does not exist.
+   * @return absl::nullopt if the key does not exist or reference to the value std::string.
    */
-  virtual const std::string& get(const std::string& key) const PURE;
+  virtual ConstStringOptRef get(absl::string_view key) const PURE;
 
   /**
-   * Fetch an integer runtime key.
+   * Fetch an integer runtime key. Runtime keys larger than ~2^53 may not be accurately converted
+   * into integers and will return default_value.
    * @param key supplies the key to fetch.
    * @param default_value supplies the value to return if the key does not exist or it does not
    *        contain an integer.
    * @return uint64_t the runtime value or the default value.
    */
-  virtual uint64_t getInteger(const std::string& key, uint64_t default_value) const PURE;
+  virtual uint64_t getInteger(absl::string_view key, uint64_t default_value) const PURE;
+
+  /**
+   * Fetch a double runtime key.
+   * @param key supplies the key to fetch.
+   * @param default_value supplies the value to return if the key does not exist or it does not
+   *        contain a double.
+   * @return double the runtime value or the default value.
+   */
+  virtual double getDouble(absl::string_view key, double default_value) const PURE;
+
+  /**
+   * Fetch a boolean runtime key.
+   * @param key supplies the key to fetch.
+   * @param default_value supplies the value to return if the key does not exist or it does not
+   *        contain a boolean.
+   * @return bool the runtime value or the default value.
+   */
+  virtual bool getBoolean(absl::string_view key, bool default_value) const PURE;
 
   /**
    * Fetch the OverrideLayers that provide values in this snapshot. Layers are ordered from bottom
@@ -203,14 +257,28 @@ public:
  */
 class Loader {
 public:
-  virtual ~Loader() {}
+  virtual ~Loader() = default;
 
   /**
-   * @return Snapshot& the current snapshot. This reference is safe to use for the duration of
-   *         the calling routine, but may be overwritten on a future event loop cycle so should be
-   *         fetched again when needed.
+   * Post-construction initialization. Runtime will be generally available after
+   * the constructor is finished, with the exception of dynamic RTDS layers,
+   * which require ClusterManager.
+   * @param cm cluster manager reference.
    */
-  virtual Snapshot& snapshot() PURE;
+  virtual void initialize(Upstream::ClusterManager& cm) PURE;
+
+  /**
+   * @return const Snapshot& the current snapshot. This reference is safe to use for the duration of
+   *         the calling routine, but may be overwritten on a future event loop cycle so should be
+   *         fetched again when needed. This may only be called from worker threads.
+   */
+  virtual const Snapshot& snapshot() PURE;
+
+  /**
+   * @return shared_ptr<const Snapshot> the current snapshot. This function may safely be called
+   *         from non-worker threads.
+   */
+  virtual std::shared_ptr<const Snapshot> threadsafeSnapshot() PURE;
 
   /**
    * Merge the given map of key-value pairs into the runtime's state. To remove a previous merge for

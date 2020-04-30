@@ -20,6 +20,11 @@ envoy_basic_cc_library(
 )
 
 envoy_cc_library(
+    name = "conn_pool_interface",
+    hdrs = ["conn_pool.h"],
+)
+
+envoy_cc_library(
     name = "mutex_tracer",
     hdrs = ["mutex_tracer.h"],
 )
@@ -27,6 +32,19 @@ envoy_cc_library(
 envoy_cc_library(
     name = "time_interface",
     hdrs = ["time.h"],
+)
+
+envoy_cc_library(
+    name = "matchers_interface",
+    hdrs = ["matchers.h"],
+)
+
+envoy_cc_library(
+    name = "regex_interface",
+    hdrs = ["regex.h"],
+    deps = [
+        ":matchers_interface",
+    ],
 )
 
 envoy_cc_library(
@@ -50,4 +68,9 @@ envoy_cc_library(
 envoy_cc_library(
     name = "backoff_strategy_interface",
     hdrs = ["backoff_strategy.h"],
+)
+
+envoy_cc_library(
+    name = "scope_tracker_interface",
+    hdrs = ["scope_tracker.h"],
 )

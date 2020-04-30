@@ -20,40 +20,6 @@ void PrintTo(const RespValue& value, std::ostream* os) { *os << value.toString()
 
 void PrintTo(const RespValuePtr& value, std::ostream* os) { *os << value->toString(); }
 
-bool operator==(const RespValue& lhs, const RespValue& rhs) {
-  if (lhs.type() != rhs.type()) {
-    return false;
-  }
-
-  switch (lhs.type()) {
-  case RespType::Array: {
-    if (lhs.asArray().size() != rhs.asArray().size()) {
-      return false;
-    }
-
-    bool equal = true;
-    for (uint64_t i = 0; i < lhs.asArray().size(); i++) {
-      equal &= (lhs.asArray()[i] == rhs.asArray()[i]);
-    }
-
-    return equal;
-  }
-  case RespType::SimpleString:
-  case RespType::BulkString:
-  case RespType::Error: {
-    return lhs.asString() == rhs.asString();
-  }
-  case RespType::Null: {
-    return true;
-  }
-  case RespType::Integer: {
-    return lhs.asInteger() == rhs.asInteger();
-  }
-  }
-
-  NOT_REACHED_GCOVR_EXCL_LINE;
-}
-
 MockEncoder::MockEncoder() {
   ON_CALL(*this, encode(_, _))
       .WillByDefault(
@@ -62,10 +28,10 @@ MockEncoder::MockEncoder() {
           }));
 }
 
-MockEncoder::~MockEncoder() {}
+MockEncoder::~MockEncoder() = default;
 
-MockDecoder::MockDecoder() {}
-MockDecoder::~MockDecoder() {}
+MockDecoder::MockDecoder() = default;
+MockDecoder::~MockDecoder() = default;
 
 namespace Client {
 
@@ -79,13 +45,13 @@ MockClient::MockClient() {
   }));
 }
 
-MockClient::~MockClient() {}
+MockClient::~MockClient() = default;
 
-MockPoolRequest::MockPoolRequest() {}
-MockPoolRequest::~MockPoolRequest() {}
+MockPoolRequest::MockPoolRequest() = default;
+MockPoolRequest::~MockPoolRequest() = default;
 
-MockPoolCallbacks::MockPoolCallbacks() {}
-MockPoolCallbacks::~MockPoolCallbacks() {}
+MockClientCallbacks::MockClientCallbacks() = default;
+MockClientCallbacks::~MockClientCallbacks() = default;
 
 } // namespace Client
 

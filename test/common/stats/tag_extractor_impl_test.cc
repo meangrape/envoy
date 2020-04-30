@@ -1,7 +1,7 @@
 #include <string>
 
 #include "envoy/common/exception.h"
-#include "envoy/config/metrics/v2/stats.pb.h"
+#include "envoy/config/metrics/v3/stats.pb.h"
 
 #include "common/config/well_known_names.h"
 #include "common/stats/tag_extractor_impl.h"
@@ -18,7 +18,7 @@ TEST(TagExtractorTest, TwoSubexpressions) {
   TagExtractorImpl tag_extractor("cluster_name", "^cluster\\.((.+?)\\.)");
   EXPECT_EQ("cluster_name", tag_extractor.name());
   std::string name = "cluster.test_cluster.upstream_cx_total";
-  std::vector<Tag> tags;
+  TagVector tags;
   IntervalSetImpl<size_t> remove_characters;
   ASSERT_TRUE(tag_extractor.extractTag(name, tags, remove_characters));
   std::string tag_extracted_name = StringUtil::removeCharacters(name, remove_characters);
@@ -31,7 +31,7 @@ TEST(TagExtractorTest, TwoSubexpressions) {
 TEST(TagExtractorTest, SingleSubexpression) {
   TagExtractorImpl tag_extractor("listner_port", "^listener\\.(\\d+?\\.)");
   std::string name = "listener.80.downstream_cx_total";
-  std::vector<Tag> tags;
+  TagVector tags;
   IntervalSetImpl<size_t> remove_characters;
   ASSERT_TRUE(tag_extractor.extractTag(name, tags, remove_characters));
   std::string tag_extracted_name = StringUtil::removeCharacters(name, remove_characters);
@@ -65,13 +65,13 @@ TEST(TagExtractorTest, BadRegex) {
 
 class DefaultTagRegexTester {
 public:
-  DefaultTagRegexTester() : tag_extractors_(envoy::config::metrics::v2::StatsConfig()) {}
+  DefaultTagRegexTester() : tag_extractors_(envoy::config::metrics::v3::StatsConfig()) {}
 
   void testRegex(const std::string& stat_name, const std::string& expected_tag_extracted_name,
-                 const std::vector<Tag>& expected_tags) {
+                 const TagVector& expected_tags) {
 
     // Test forward iteration through the regexes
-    std::vector<Tag> tags;
+    TagVector tags;
     const std::string tag_extracted_name = tag_extractors_.produceTags(stat_name, tags);
 
     auto cmp = [](const Tag& lhs, const Tag& rhs) {
@@ -85,7 +85,7 @@ public:
         << fmt::format("Stat name '{}' did not produce the expected tags", stat_name);
 
     // Reverse iteration through regexes to ensure ordering invariance
-    std::vector<Tag> rev_tags;
+    TagVector rev_tags;
     const std::string rev_tag_extracted_name = produceTagsReverse(stat_name, rev_tags);
 
     EXPECT_EQ(expected_tag_extracted_name, rev_tag_extracted_name);
@@ -106,10 +106,12 @@ public:
    * assuming we don't care about tag-order. This is in large part correct by design because
    * stat_name is not mutated until all the extraction is done.
    * @param metric_name std::string a name of Stats::Metric (Counter, Gauge, Histogram).
-   * @param tags std::vector<Tag>& a set of Stats::Tag.
+   * @param tags TagVector& a set of Stats::Tag.
    * @return std::string the metric_name with tags removed.
    */
-  std::string produceTagsReverse(const std::string& metric_name, std::vector<Tag>& tags) const {
+  std::string produceTagsReverse(const std::string& metric_name, TagVector& tags) const {
+    // TODO(jmarantz): Skip the creation of string-based tags, creating a StatNameTagVector instead.
+
     // Note: one discrepancy between this and TagProducerImpl::produceTags is that this
     // version does not add in tag_extractors_.default_tags_ into tags. That doesn't matter
     // for this test, however.
@@ -327,6 +329,25 @@ TEST(TagExtractorTest, DefaultTagExtractors) {
   regex_tester.testRegex("http.fault_connection_manager.fault.fault_cluster.aborts_injected",
                          "http.fault.aborts_injected",
                          {fault_connection_manager, fault_downstream_cluster});
+
+  Tag rds_hcm;
+  rds_hcm.name_ = tag_names.HTTP_CONN_MANAGER_PREFIX;
+  rds_hcm.value_ = "rds_connection_manager";
+
+  Tag rds_route_config;
+  rds_route_config.name_ = tag_names.RDS_ROUTE_CONFIG;
+  rds_route_config.value_ = "route_config.123";
+
+  regex_tester.testRegex("http.rds_connection_manager.rds.route_config.123.update_success",
+                         "http.rds.update_success", {rds_hcm, rds_route_config});
+
+  // Listener manager worker id
+  Tag worker_id;
+  worker_id.name_ = tag_names.WORKER_ID;
+  worker_id.value_ = "worker_123";
+
+  regex_tester.testRegex("listener_manager.worker_123.dispatcher.loop_duration_us",
+                         "listener_manager.dispatcher.loop_duration_us", {worker_id});
 }
 
 TEST(TagExtractorTest, ExtractRegexPrefix) {

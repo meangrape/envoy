@@ -11,30 +11,30 @@ namespace MySQLProxy {
 class MySQLSession : Logger::Loggable<Logger::Id::filter> {
 public:
   enum class State {
-    MYSQL_INIT = 0,
-    MYSQL_CHALLENGE_REQ = 1,
-    MYSQL_CHALLENGE_RESP_41 = 2,
-    MYSQL_CHALLENGE_RESP_320 = 3,
-    MYSQL_SSL_PT = 4,
-    MYSQL_AUTH_SWITCH_REQ = 5,
-    MYSQL_AUTH_SWITCH_REQ_OLD = 6,
-    MYSQL_AUTH_SWITCH_RESP = 7,
-    MYSQL_AUTH_SWITCH_MORE = 8,
-    MYSQL_REQ_RESP = 9,
-    MYSQL_REQ = 10,
-    MYSQL_RESYNC = 11,
-    MYSQL_NOT_HANDLED = 12,
-    MYSQL_ERROR = 13,
+    Init = 0,
+    ChallengeReq = 1,
+    ChallengeResp41 = 2,
+    ChallengeResp320 = 3,
+    SslPt = 4,
+    AuthSwitchReq = 5,
+    AuthSwitchReqOld = 6,
+    AuthSwitchResp = 7,
+    AuthSwitchMore = 8,
+    ReqResp = 9,
+    Req = 10,
+    Resync = 11,
+    NotHandled = 12,
+    Error = 13,
   };
 
   void setState(MySQLSession::State state) { state_ = state; }
   MySQLSession::State getState() { return state_; }
-  int getExpectedSeq() { return expected_seq_; }
-  void setExpectedSeq(int seq) { expected_seq_ = seq; }
+  uint8_t getExpectedSeq() { return expected_seq_; }
+  void setExpectedSeq(uint8_t seq) { expected_seq_ = seq; }
 
 private:
-  MySQLSession::State state_{State::MYSQL_INIT};
-  int expected_seq_{0};
+  MySQLSession::State state_{State::Init};
+  uint8_t expected_seq_{0};
 };
 
 } // namespace MySQLProxy

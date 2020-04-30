@@ -2,9 +2,10 @@ licenses(["notice"])  # Apache 2
 
 load(
     "//bazel:envoy_build_system.bzl",
+    "envoy_benchmark_test",
+    "envoy_cc_benchmark_binary",
     "envoy_cc_fuzz_test",
     "envoy_cc_test",
-    "envoy_cc_test_binary",
     "envoy_cc_test_library",
     "envoy_package",
     "envoy_proto_library",
@@ -26,16 +27,24 @@ envoy_proto_library(
     srcs = ["buffer_fuzz.proto"],
 )
 
+envoy_cc_test_library(
+    name = "buffer_fuzz_lib",
+    srcs = ["buffer_fuzz.cc"],
+    hdrs = ["buffer_fuzz.h"],
+    deps = [
+        ":buffer_fuzz_proto_cc_proto",
+        "//source/common/buffer:buffer_lib",
+        "//source/common/memory:stats_lib",
+        "//source/common/network:address_lib",
+        "//test/fuzz:utility_lib",
+    ],
+)
+
 envoy_cc_fuzz_test(
     name = "buffer_fuzz_test",
     srcs = ["buffer_fuzz_test.cc"],
     corpus = "buffer_corpus",
-    deps = [
-        ":buffer_fuzz_proto_cc",
-        "//source/common/buffer:buffer_lib",
-        "//source/common/common:stack_array",
-        "//source/common/memory:stats_lib",
-    ],
+    deps = [":buffer_fuzz_lib"],
 )
 
 envoy_cc_test(
@@ -55,7 +64,7 @@ envoy_cc_test(
     deps = [
         ":utility_lib",
         "//source/common/buffer:buffer_lib",
-        "//source/common/network:io_socket_handle_lib",
+        "//source/common/network:address_lib",
         "//test/mocks/api:api_mocks",
         "//test/test_common:logging_lib",
         "//test/test_common:threadsafe_singleton_injector_lib",
@@ -69,7 +78,7 @@ envoy_cc_test(
         ":utility_lib",
         "//source/common/buffer:buffer_lib",
         "//source/common/buffer:watermark_buffer_lib",
-        "//source/common/network:io_socket_handle_lib",
+        "//source/common/network:address_lib",
     ],
 )
 
@@ -82,7 +91,7 @@ envoy_cc_test(
     ],
 )
 
-envoy_cc_test_binary(
+envoy_cc_benchmark_binary(
     name = "buffer_speed_test",
     srcs = ["buffer_speed_test.cc"],
     external_deps = [
@@ -91,4 +100,9 @@ envoy_cc_test_binary(
     deps = [
         "//source/common/buffer:buffer_lib",
     ],
+)
+
+envoy_benchmark_test(
+    name = "buffer_speed_test_benchmark_test",
+    benchmark_binary = "buffer_speed_test",
 )

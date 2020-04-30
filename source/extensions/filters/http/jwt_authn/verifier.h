@@ -1,5 +1,7 @@
 #pragma once
 
+#include "envoy/extensions/filters/http/jwt_authn/v3/config.pb.h"
+
 #include "extensions/filters/http/jwt_authn/authenticator.h"
 
 namespace Envoy {
@@ -8,21 +10,21 @@ namespace HttpFilters {
 namespace JwtAuthn {
 
 class Verifier;
-typedef std::unique_ptr<const Verifier> VerifierConstPtr;
+using VerifierConstPtr = std::unique_ptr<const Verifier>;
 
 /**
  * Supports verification of JWTs with configured requirements.
  */
 class Verifier {
 public:
-  virtual ~Verifier() {}
+  virtual ~Verifier() = default;
 
   /**
    * Handle for notifying Verifier callers of request completion.
    */
   class Callbacks {
   public:
-    virtual ~Callbacks() {}
+    virtual ~Callbacks() = default;
 
     /**
      * Successfully verified JWT payload are stored in the struct with its
@@ -43,7 +45,7 @@ public:
   // Context object to hold data needed for verifier.
   class Context {
   public:
-    virtual ~Context() {}
+    virtual ~Context() = default;
 
     /**
      * Returns the request headers wrapped in this context.
@@ -51,6 +53,13 @@ public:
      * @return the request headers.
      */
     virtual Http::HeaderMap& headers() const PURE;
+
+    /**
+     * Returns the active span wrapped in this context.
+     *
+     * @return the active span.
+     */
+    virtual Tracing::Span& parentSpan() const PURE;
 
     /**
      * Returns the request callback wrapped in this context.
@@ -65,24 +74,24 @@ public:
     virtual void cancel() PURE;
   };
 
-  typedef std::shared_ptr<Context> ContextSharedPtr;
+  using ContextSharedPtr = std::shared_ptr<Context>;
 
   // Verify all tokens on headers, and signal the caller with callback.
   virtual void verify(ContextSharedPtr context) const PURE;
 
   // Factory method for creating verifiers.
-  static VerifierConstPtr
-  create(const ::envoy::config::filter::http::jwt_authn::v2alpha::JwtRequirement& requirement,
-         const Protobuf::Map<ProtobufTypes::String,
-                             ::envoy::config::filter::http::jwt_authn::v2alpha::JwtProvider>&
-             providers,
-         const AuthFactory& factory, const Extractor& extractor_for_allow_fail);
+  static VerifierConstPtr create(
+      const envoy::extensions::filters::http::jwt_authn::v3::JwtRequirement& requirement,
+      const Protobuf::Map<std::string,
+                          envoy::extensions::filters::http::jwt_authn::v3::JwtProvider>& providers,
+      const AuthFactory& factory);
 
   // Factory method for creating verifier contexts.
-  static ContextSharedPtr createContext(Http::HeaderMap& headers, Callbacks* callback);
+  static ContextSharedPtr createContext(Http::RequestHeaderMap& headers, Tracing::Span& parent_span,
+                                        Callbacks* callback);
 };
 
-typedef std::shared_ptr<Verifier::Context> ContextSharedPtr;
+using ContextSharedPtr = std::shared_ptr<Verifier::Context>;
 
 } // namespace JwtAuthn
 } // namespace HttpFilters

@@ -1,3 +1,5 @@
+#include <cstdint>
+
 #include "extensions/filters/network/mysql_proxy/mysql_codec.h"
 #include "extensions/filters/network/mysql_proxy/mysql_codec_clogin.h"
 #include "extensions/filters/network/mysql_proxy/mysql_codec_clogin_resp.h"
@@ -20,19 +22,19 @@ public:
   int encodeQuery(std::string query, hsql::SQLParserResult& result) {
     Command mysql_cmd_encode{};
     Command mysql_cmd_decode{};
-    uint64_t offset = 0;
-    int seq = 0;
-    int len = 0;
-    mysql_cmd_encode.setCmd(Command::Cmd::COM_QUERY);
+    uint8_t seq = 0u;
+    uint32_t len = 0u;
+    mysql_cmd_encode.setCmd(Command::Cmd::Query);
     mysql_cmd_encode.setData(query);
     std::string data = mysql_cmd_encode.encode();
     std::string mysql_msg = BufferHelper::encodeHdr(data, 0);
 
     Buffer::InstancePtr decode_data(new Buffer::OwnedImpl(mysql_msg));
-    if (BufferHelper::peekHdr(*decode_data, offset, len, seq) != MYSQL_SUCCESS) {
+    if (BufferHelper::peekHdr(*decode_data, len, seq) != MYSQL_SUCCESS) {
       return MYSQL_FAILURE;
     }
-    if (mysql_cmd_decode.decode(*decode_data, offset, seq, len) != MYSQL_SUCCESS) {
+    BufferHelper::consumeHdr(*decode_data);
+    if (mysql_cmd_decode.decode(*decode_data, seq, len) != MYSQL_SUCCESS) {
       return MYSQL_FAILURE;
     }
     hsql::SQLParser::parse(mysql_cmd_decode.getData(), &result);
@@ -69,7 +71,7 @@ public:
   std::string buildCreate(enum TestResource res, std::string option, bool if_not_exists,
                           std::string res_name, std::string value) {
     std::string command("CREATE ");
-    if (option != "") {
+    if (!option.empty()) {
       command.append(option);
       command.append(SPACE);
     }
@@ -157,7 +159,7 @@ public:
   //"INSERT INTO <table> ...
   std::string buildInsert(std::string option, bool into, std::string table, std::string values) {
     std::string command("INSERT ");
-    if (option != "") {
+    if (!option.empty()) {
       command.append(option);
       command.append(SPACE);
     }
@@ -671,6 +673,7 @@ TEST_F(MySQLCommandTest, MySQLTest37) {
  * Test correlated queries: INSERT, SELECT
  */
 TEST_F(MySQLCommandTest, MySQLTest38) {
+  // SPELLCHECKER(off)
   std::string table1 = "table1";
   std::string table2 = "table2";
   std::string ins_command = buildInsert("", true, table1, "");
@@ -680,6 +683,7 @@ TEST_F(MySQLCommandTest, MySQLTest38) {
   EXPECT_EQ(MYSQL_SUCCESS, encodeQuery(ins_command, result));
   expectStatementTypeAndTableAccessMap(result, hsql::StatementType::kStmtInsert,
                                        {{table1, {"insert"}}, {table2, {"select"}}});
+  // SPELLCHECKER(on)
 }
 
 /*

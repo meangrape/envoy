@@ -3,7 +3,7 @@
 #include "envoy/api/api.h"
 #include "envoy/common/pure.h"
 #include "envoy/common/time.h"
-#include "envoy/config/filter/http/jwt_authn/v2alpha/config.pb.h"
+#include "envoy/extensions/filters/http/jwt_authn/v3/config.pb.h"
 
 #include "jwt_verify_lib/jwks.h"
 
@@ -13,7 +13,7 @@ namespace HttpFilters {
 namespace JwtAuthn {
 
 class JwksCache;
-typedef std::unique_ptr<JwksCache> JwksCachePtr;
+using JwksCachePtr = std::unique_ptr<JwksCache>;
 
 /**
  * Interface to access all configured Jwt rules and their cached Jwks objects.
@@ -35,18 +35,18 @@ typedef std::unique_ptr<JwksCache> JwksCachePtr;
 
 class JwksCache {
 public:
-  virtual ~JwksCache() {}
+  virtual ~JwksCache() = default;
 
   // Interface to access a Jwks config rule and its cached Jwks object.
   class JwksData {
   public:
-    virtual ~JwksData() {}
+    virtual ~JwksData() = default;
 
     // Check if a list of audiences are allowed.
     virtual bool areAudiencesAllowed(const std::vector<std::string>& audiences) const PURE;
 
     // Get the cached config: JWT rule.
-    virtual const ::envoy::config::filter::http::jwt_authn::v2alpha::JwtProvider&
+    virtual const envoy::extensions::filters::http::jwt_authn::v3::JwtProvider&
     getJwtProvider() const PURE;
 
     // Get the Jwks object.
@@ -67,7 +67,7 @@ public:
 
   // Factory function to create an instance.
   static JwksCachePtr
-  create(const ::envoy::config::filter::http::jwt_authn::v2alpha::JwtAuthentication& config,
+  create(const envoy::extensions::filters::http::jwt_authn::v3::JwtAuthentication& config,
          TimeSource& time_source, Api::Api& api);
 };
 

@@ -24,8 +24,10 @@
 #include "test/test_common/printers.h"
 #include "test/test_common/utility.h"
 
+#include "absl/strings/match.h"
+
 namespace Envoy {
-void BufferingStreamDecoder::decodeHeaders(Http::HeaderMapPtr&& headers, bool end_stream) {
+void BufferingStreamDecoder::decodeHeaders(Http::ResponseHeaderMapPtr&& headers, bool end_stream) {
   ASSERT(!complete_);
   complete_ = end_stream;
   headers_ = std::move(headers);
@@ -43,7 +45,7 @@ void BufferingStreamDecoder::decodeData(Buffer::Instance& data, bool end_stream)
   }
 }
 
-void BufferingStreamDecoder::decodeTrailers(Http::HeaderMapPtr&&) {
+void BufferingStreamDecoder::decodeTrailers(Http::ResponseTrailerMapPtr&&) {
   NOT_IMPLEMENTED_GCOVR_EXCL_LINE;
 }
 
@@ -64,8 +66,9 @@ IntegrationUtil::makeSingleRequest(const Network::Address::InstanceConstSharedPt
 
   NiceMock<Stats::MockIsolatedStatsStore> mock_stats_store;
   Event::GlobalTimeSystem time_system;
-  Api::Impl api(Thread::threadFactoryForTest(), mock_stats_store, time_system);
-  Event::DispatcherPtr dispatcher(api.allocateDispatcher());
+  Api::Impl api(Thread::threadFactoryForTest(), mock_stats_store, time_system,
+                Filesystem::fileSystemForTest());
+  Event::DispatcherPtr dispatcher(api.allocateDispatcher("test_thread"));
   std::shared_ptr<Upstream::MockClusterInfo> cluster{new NiceMock<Upstream::MockClusterInfo>()};
   Upstream::HostDescriptionConstSharedPtr host_description{
       Upstream::makeTestHostDescription(cluster, "tcp://127.0.0.1:80")};
@@ -78,16 +81,16 @@ IntegrationUtil::makeSingleRequest(const Network::Address::InstanceConstSharedPt
     client.close();
     dispatcher->exit();
   }));
-  Http::StreamEncoder& encoder = client.newStream(*response);
+  Http::RequestEncoder& encoder = client.newStream(*response);
   encoder.getStream().addCallbacks(*response);
 
-  Http::HeaderMapImpl headers;
-  headers.insertMethod().value(method);
-  headers.insertPath().value(url);
-  headers.insertHost().value(host);
-  headers.insertScheme().value(Http::Headers::get().SchemeValues.Http);
+  Http::RequestHeaderMapImpl headers;
+  headers.setMethod(method);
+  headers.setPath(url);
+  headers.setHost(host);
+  headers.setReferenceScheme(Http::Headers::get().SchemeValues.Http);
   if (!content_type.empty()) {
-    headers.insertContentType().value(content_type);
+    headers.setContentType(content_type);
   }
   encoder.encodeHeaders(headers, body.empty());
   if (!body.empty()) {
@@ -114,7 +117,7 @@ RawConnectionDriver::RawConnectionDriver(uint32_t port, Buffer::Instance& initia
                                          Network::Address::IpVersion version) {
   api_ = Api::createApiForTest(stats_store_);
   Event::GlobalTimeSystem time_system;
-  dispatcher_ = api_->allocateDispatcher();
+  dispatcher_ = api_->allocateDispatcher("test_thread");
   callbacks_ = std::make_unique<ConnectionCallbacks>();
   client_ = dispatcher_->createClientConnection(
       Network::Utility::resolveUrl(
@@ -126,7 +129,7 @@ RawConnectionDriver::RawConnectionDriver(uint32_t port, Buffer::Instance& initia
   client_->connect();
 }
 
-RawConnectionDriver::~RawConnectionDriver() {}
+RawConnectionDriver::~RawConnectionDriver() = default;
 
 void RawConnectionDriver::run(Event::Dispatcher::RunType run_type) { dispatcher_->run(run_type); }
 
@@ -139,9 +142,14 @@ Network::FilterStatus WaitForPayloadReader::onData(Buffer::Instance& data, bool 
   data_.append(data.toString());
   data.drain(data.length());
   read_end_stream_ = end_stream;
-  if ((!data_to_wait_for_.empty() && data_.find(data_to_wait_for_) == 0) ||
+  if ((!data_to_wait_for_.empty() && absl::StartsWith(data_, data_to_wait_for_)) ||
       (exact_match_ == false && data_.find(data_to_wait_for_) != std::string::npos) || end_stream) {
     data_to_wait_for_.clear();
+    dispatcher_.exit();
+  }
+
+  if (wait_for_length_ && data_.size() >= length_to_wait_for_) {
+    wait_for_length_ = false;
     dispatcher_.exit();
   }
 

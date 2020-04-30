@@ -7,9 +7,11 @@
 #include "envoy/access_log/access_log.h"
 #include "envoy/api/api.h"
 #include "envoy/common/mutex_tracer.h"
+#include "envoy/config/trace/v3/http_tracer.pb.h"
 #include "envoy/event/timer.h"
+#include "envoy/grpc/context.h"
 #include "envoy/http/context.h"
-#include "envoy/init/init.h"
+#include "envoy/init/manager.h"
 #include "envoy/local_info/local_info.h"
 #include "envoy/network/listen_socket.h"
 #include "envoy/runtime/runtime.h"
@@ -34,7 +36,7 @@ namespace Server {
  */
 class Instance {
 public:
-  virtual ~Instance() {}
+  virtual ~Instance() = default;
 
   /**
    * @return Admin& the global HTTP admin endpoint for the server.
@@ -73,9 +75,9 @@ public:
   virtual void drainListeners() PURE;
 
   /**
-   * @return const DrainManager& singleton for use by the entire server.
+   * @return DrainManager& singleton for use by the entire server.
    */
-  virtual const DrainManager& drainManager() PURE;
+  virtual DrainManager& drainManager() PURE;
 
   /**
    * @return AccessLogManager for use by the entire server.
@@ -86,12 +88,6 @@ public:
    * Toggle whether the server fails or passes external healthchecks.
    */
   virtual void failHealthcheck(bool fail) PURE;
-
-  /**
-   * Fetch server stats specific to this process vs. global shared stats in a hot restart scenario.
-   * @param info supplies the stats structure to fill.
-   */
-  virtual void getParentStats(HotRestart::GetParentStatsInfo& info) PURE;
 
   /**
    * @return whether external healthchecks are currently failed or not.
@@ -189,9 +185,19 @@ public:
   virtual Stats::Store& stats() PURE;
 
   /**
+   * @return the server-wide grpc context.
+   */
+  virtual Grpc::Context& grpcContext() PURE;
+
+  /**
    * @return the server-wide http context.
    */
   virtual Http::Context& httpContext() PURE;
+
+  /**
+   * @return the server-wide process context.
+   */
+  virtual ProcessContextOptRef processContext() PURE;
 
   /**
    * @return ThreadLocal::Instance& the thread local storage engine for the server. This is used to
@@ -202,7 +208,7 @@ public:
   /**
    * @return information about the local environment the server is running in.
    */
-  virtual const LocalInfo::LocalInfo& localInfo() PURE;
+  virtual const LocalInfo::LocalInfo& localInfo() const PURE;
 
   /**
    * @return the time source used for the server.
@@ -213,6 +219,40 @@ public:
    * @return the flush interval of stats sinks.
    */
   virtual std::chrono::milliseconds statsFlushInterval() const PURE;
+
+  /**
+   * Flush the stats sinks outside of a flushing interval.
+   * Note: stats flushing may not be synchronous.
+   * Therefore, this function may return prior to flushing taking place.
+   */
+  virtual void flushStats() PURE;
+
+  /**
+   * @return ProtobufMessage::ValidationContext& validation context for configuration
+   *         messages.
+   */
+  virtual ProtobufMessage::ValidationContext& messageValidationContext() PURE;
+
+  /**
+   * @return Configuration::ServerFactoryContext& factory context for filters.
+   */
+  virtual Configuration::ServerFactoryContext& serverFactoryContext() PURE;
+
+  /**
+   * @return Configuration::TransportSocketFactoryContext& factory context for transport sockets.
+   */
+  virtual Configuration::TransportSocketFactoryContext& transportSocketFactoryContext() PURE;
+
+  /**
+   * Set the default server-wide tracer provider configuration that will be used as a fallback
+   * if an "envoy.filters.network.http_connection_manager" filter that has tracing enabled doesn't
+   * define a tracer provider in-place.
+   *
+   * Once deprecation window for the tracer provider configuration in the bootstrap config is over,
+   * this method will no longer be necessary.
+   */
+  virtual void
+  setDefaultTracingConfig(const envoy::config::trace::v3::Tracing& tracing_config) PURE;
 };
 
 } // namespace Server

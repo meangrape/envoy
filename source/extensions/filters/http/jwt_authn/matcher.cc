@@ -1,13 +1,17 @@
 #include "extensions/filters/http/jwt_authn/matcher.h"
 
+#include "envoy/config/route/v3/route_components.pb.h"
+#include "envoy/extensions/filters/http/jwt_authn/v3/config.pb.h"
+
 #include "common/common/logger.h"
+#include "common/common/matchers.h"
+#include "common/common/regex.h"
 #include "common/router/config_impl.h"
 
 #include "absl/strings/match.h"
 
-using ::envoy::api::v2::route::RouteMatch;
-using ::envoy::config::filter::http::jwt_authn::v2alpha::JwtProvider;
-using ::envoy::config::filter::http::jwt_authn::v2alpha::RequirementRule;
+using envoy::config::route::v3::RouteMatch;
+using envoy::extensions::filters::http::jwt_authn::v3::RequirementRule;
 using Envoy::Router::ConfigUtility;
 
 namespace Envoy {
@@ -19,22 +23,19 @@ namespace {
 /**
  * Perform a match against any HTTP header or pseudo-header.
  */
-class BaseMatcherImpl : public Matcher, public Logger::Loggable<Logger::Id::filter> {
+class BaseMatcherImpl : public Matcher, public Logger::Loggable<Logger::Id::jwt> {
 public:
   BaseMatcherImpl(const RequirementRule& rule)
-      : case_sensitive_(PROTOBUF_GET_WRAPPED_OR_DEFAULT(rule.match(), case_sensitive, true)) {
-
-    for (const auto& header_map : rule.match().headers()) {
-      config_headers_.push_back(header_map);
-    }
-
+      : case_sensitive_(PROTOBUF_GET_WRAPPED_OR_DEFAULT(rule.match(), case_sensitive, true)),
+        config_headers_(Http::HeaderUtility::buildHeaderDataVector(rule.match().headers())) {
     for (const auto& query_parameter : rule.match().query_parameters()) {
-      config_query_parameters_.push_back(query_parameter);
+      config_query_parameters_.push_back(
+          std::make_unique<Router::ConfigUtility::QueryParameterMatcher>(query_parameter));
     }
   }
 
   // Check match for HeaderMatcher and QueryParameterMatcher
-  bool matchRoute(const Http::HeaderMap& headers) const {
+  bool matchRoute(const Http::RequestHeaderMap& headers) const {
     bool matches = true;
     // TODO(potatop): matching on RouteMatch runtime is not implemented.
 
@@ -51,8 +52,8 @@ protected:
   const bool case_sensitive_;
 
 private:
-  std::vector<Http::HeaderUtility::HeaderData> config_headers_;
-  std::vector<Router::ConfigUtility::QueryParameterMatcher> config_query_parameters_;
+  std::vector<Http::HeaderUtility::HeaderDataPtr> config_headers_;
+  std::vector<Router::ConfigUtility::QueryParameterMatcherPtr> config_query_parameters_;
 };
 
 /**
@@ -61,13 +62,12 @@ private:
 class PrefixMatcherImpl : public BaseMatcherImpl {
 public:
   PrefixMatcherImpl(const RequirementRule& rule)
-      : BaseMatcherImpl(rule), prefix_(rule.match().prefix()) {}
+      : BaseMatcherImpl(rule), prefix_(rule.match().prefix()),
+        path_matcher_(Matchers::PathMatcher::createPrefix(prefix_, !case_sensitive_)) {}
 
-  bool matches(const Http::HeaderMap& headers) const override {
+  bool matches(const Http::RequestHeaderMap& headers) const override {
     if (BaseMatcherImpl::matchRoute(headers) &&
-        (case_sensitive_
-             ? absl::StartsWith(headers.Path()->value().getStringView(), prefix_)
-             : absl::StartsWithIgnoreCase(headers.Path()->value().getStringView(), prefix_))) {
+        path_matcher_->match(headers.Path()->value().getStringView())) {
       ENVOY_LOG(debug, "Prefix requirement '{}' matched.", prefix_);
       return true;
     }
@@ -77,6 +77,7 @@ public:
 private:
   // prefix string
   const std::string prefix_;
+  const Matchers::PathMatcherConstSharedPtr path_matcher_;
 };
 
 /**
@@ -85,19 +86,14 @@ private:
 class PathMatcherImpl : public BaseMatcherImpl {
 public:
   PathMatcherImpl(const RequirementRule& rule)
-      : BaseMatcherImpl(rule), path_(rule.match().path()) {}
+      : BaseMatcherImpl(rule), path_(rule.match().path()),
+        path_matcher_(Matchers::PathMatcher::createExact(path_, !case_sensitive_)) {}
 
-  bool matches(const Http::HeaderMap& headers) const override {
-    if (BaseMatcherImpl::matchRoute(headers)) {
-      const Http::HeaderString& path = headers.Path()->value();
-      size_t compare_length = Http::Utility::findQueryStringStart(path) - path.c_str();
-
-      auto real_path = path.getStringView().substr(0, compare_length);
-      bool match = case_sensitive_ ? real_path == path_ : StringUtil::caseCompare(real_path, path_);
-      if (match) {
-        ENVOY_LOG(debug, "Path requirement '{}' matched.", path_);
-        return true;
-      }
+  bool matches(const Http::RequestHeaderMap& headers) const override {
+    if (BaseMatcherImpl::matchRoute(headers) &&
+        path_matcher_->match(headers.Path()->value().getStringView())) {
+      ENVOY_LOG(debug, "Path requirement '{}' matched.", path_);
+      return true;
     }
     return false;
   }
@@ -105,22 +101,37 @@ public:
 private:
   // path string.
   const std::string path_;
+  const Matchers::PathMatcherConstSharedPtr path_matcher_;
 };
 
 /**
  * Perform a match against any path with a regex rule.
+ * TODO(mattklein123): This code needs dedup with RegexRouteEntryImpl.
  */
 class RegexMatcherImpl : public BaseMatcherImpl {
 public:
-  RegexMatcherImpl(const RequirementRule& rule)
-      : BaseMatcherImpl(rule), regex_(RegexUtil::parseRegex(rule.match().regex())),
-        regex_str_(rule.match().regex()) {}
+  RegexMatcherImpl(const RequirementRule& rule) : BaseMatcherImpl(rule) {
+    // TODO(yangminzhu): Use PathMatcher once hidden_envoy_deprecated_regex is removed.
+    if (rule.match().path_specifier_case() ==
+        envoy::config::route::v3::RouteMatch::PathSpecifierCase::kHiddenEnvoyDeprecatedRegex) {
+      regex_ = Regex::Utility::parseStdRegexAsCompiledMatcher(
+          rule.match().hidden_envoy_deprecated_regex());
+      regex_str_ = rule.match().hidden_envoy_deprecated_regex();
+    } else {
+      ASSERT(rule.match().path_specifier_case() ==
+             envoy::config::route::v3::RouteMatch::PathSpecifierCase::kSafeRegex);
+      regex_ = Regex::Utility::parseRegex(rule.match().safe_regex());
+      regex_str_ = rule.match().safe_regex().regex();
+    }
+  }
 
-  bool matches(const Http::HeaderMap& headers) const override {
+  bool matches(const Http::RequestHeaderMap& headers) const override {
     if (BaseMatcherImpl::matchRoute(headers)) {
       const Http::HeaderString& path = headers.Path()->value();
-      const char* query_string_start = Http::Utility::findQueryStringStart(path);
-      if (std::regex_match(path.c_str(), query_string_start, regex_)) {
+      const absl::string_view query_string = Http::Utility::findQueryStringStart(path);
+      absl::string_view path_view = path.getStringView();
+      path_view.remove_suffix(query_string.length());
+      if (regex_->match(path_view)) {
         ENVOY_LOG(debug, "Regex requirement '{}' matched.", regex_str_);
         return true;
       }
@@ -129,10 +140,9 @@ public:
   }
 
 private:
-  // regex object
-  const std::regex regex_;
+  Regex::CompiledMatcherPtr regex_;
   // raw regex string, for logging.
-  const std::string regex_str_;
+  std::string regex_str_;
 };
 
 } // namespace
@@ -143,7 +153,8 @@ MatcherConstPtr Matcher::create(const RequirementRule& rule) {
     return std::make_unique<PrefixMatcherImpl>(rule);
   case RouteMatch::PathSpecifierCase::kPath:
     return std::make_unique<PathMatcherImpl>(rule);
-  case RouteMatch::PathSpecifierCase::kRegex:
+  case RouteMatch::PathSpecifierCase::kHiddenEnvoyDeprecatedRegex:
+  case RouteMatch::PathSpecifierCase::kSafeRegex:
     return std::make_unique<RegexMatcherImpl>(rule);
   // path specifier is required.
   case RouteMatch::PathSpecifierCase::PATH_SPECIFIER_NOT_SET:

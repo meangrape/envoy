@@ -4,13 +4,16 @@
 #include <string>
 #include <vector>
 
-#include "envoy/config/filter/thrift/rate_limit/v2alpha1/rate_limit.pb.h"
+#include "envoy/extensions/filters/network/thrift_proxy/filters/ratelimit/v3/rate_limit.pb.h"
 #include "envoy/ratelimit/ratelimit.h"
 #include "envoy/stats/scope.h"
 #include "envoy/stats/stats_macros.h"
 
+#include "common/stats/symbol_table_impl.h"
+
 #include "extensions/filters/common/ratelimit/ratelimit.h"
-#include "extensions/filters/network/thrift_proxy/filters/filter.h"
+#include "extensions/filters/common/ratelimit/stat_names.h"
+#include "extensions/filters/network/thrift_proxy/filters/pass_through_filter.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -24,11 +27,13 @@ using namespace Envoy::Extensions::NetworkFilters;
  */
 class Config {
 public:
-  Config(const envoy::config::filter::thrift::rate_limit::v2alpha1::RateLimit& config,
+  Config(const envoy::extensions::filters::network::thrift_proxy::filters::ratelimit::v3::RateLimit&
+             config,
          const LocalInfo::LocalInfo& local_info, Stats::Scope& scope, Runtime::Loader& runtime,
          Upstream::ClusterManager& cm)
       : domain_(config.domain()), stage_(config.stage()), local_info_(local_info), scope_(scope),
-        runtime_(runtime), cm_(cm), failure_mode_deny_(config.failure_mode_deny()) {}
+        runtime_(runtime), cm_(cm), failure_mode_deny_(config.failure_mode_deny()),
+        stat_names_(scope_.symbolTable()) {}
 
   const std::string& domain() const { return domain_; }
   const LocalInfo::LocalInfo& localInfo() const { return local_info_; }
@@ -36,8 +41,8 @@ public:
   Stats::Scope& scope() { return scope_; }
   Runtime::Loader& runtime() { return runtime_; }
   Upstream::ClusterManager& cm() { return cm_; }
-
   bool failureModeAllow() const { return !failure_mode_deny_; };
+  Filters::Common::RateLimit::StatNames& statNames() { return stat_names_; }
 
 private:
   const std::string domain_;
@@ -47,9 +52,10 @@ private:
   Runtime::Loader& runtime_;
   Upstream::ClusterManager& cm_;
   const bool failure_mode_deny_;
+  Filters::Common::RateLimit::StatNames stat_names_;
 };
 
-typedef std::shared_ptr<Config> ConfigSharedPtr;
+using ConfigSharedPtr = std::shared_ptr<Config>;
 
 /**
  * Thrift rate limit filter instance. Calls the rate limit service with the given configuration
@@ -59,87 +65,21 @@ typedef std::shared_ptr<Config> ConfigSharedPtr;
  * error is returned and the failure_mode_deny option is enabled, an application exception is
  * returned. By default, errors allow the request to continue.
  */
-class Filter : public ThriftProxy::ThriftFilters::DecoderFilter,
+class Filter : public ThriftProxy::ThriftFilters::PassThroughDecoderFilter,
                public Filters::Common::RateLimit::RequestCallbacks {
 public:
   Filter(ConfigSharedPtr config, Filters::Common::RateLimit::ClientPtr&& client)
-      : config_(config), client_(std::move(client)) {}
-  virtual ~Filter() {}
+      : config_(std::move(config)), client_(std::move(client)) {}
+  ~Filter() override = default;
 
-  // ThriftFilters::ThriftDecoderFilter
-  virtual void onDestroy() override;
-  virtual void setDecoderFilterCallbacks(
-      ThriftProxy::ThriftFilters::DecoderFilterCallbacks& callbacks) override {
-    callbacks_ = &callbacks;
-  };
-  virtual ThriftProxy::FilterStatus
-  transportBegin(NetworkFilters::ThriftProxy::MessageMetadataSharedPtr) override {
-    return ThriftProxy::FilterStatus::Continue;
-  }
-  virtual ThriftProxy::FilterStatus transportEnd() override {
-    return ThriftProxy::FilterStatus::Continue;
-  }
-  virtual ThriftProxy::FilterStatus messageBegin(ThriftProxy::MessageMetadataSharedPtr) override;
-  virtual ThriftProxy::FilterStatus messageEnd() override {
-    return ThriftProxy::FilterStatus::Continue;
-  }
-  virtual ThriftProxy::FilterStatus structBegin(absl::string_view) override {
-    return ThriftProxy::FilterStatus::Continue;
-  }
-  virtual ThriftProxy::FilterStatus structEnd() override {
-    return ThriftProxy::FilterStatus::Continue;
-  }
-  virtual ThriftProxy::FilterStatus fieldBegin(absl::string_view, ThriftProxy::FieldType&,
-                                               int16_t&) override {
-    return ThriftProxy::FilterStatus::Continue;
-  }
-  virtual ThriftProxy::FilterStatus fieldEnd() override {
-    return ThriftProxy::FilterStatus::Continue;
-  }
-  virtual ThriftProxy::FilterStatus boolValue(bool&) override {
-    return ThriftProxy::FilterStatus::Continue;
-  }
-  virtual ThriftProxy::FilterStatus byteValue(uint8_t&) override {
-    return ThriftProxy::FilterStatus::Continue;
-  }
-  virtual ThriftProxy::FilterStatus int16Value(int16_t&) override {
-    return ThriftProxy::FilterStatus::Continue;
-  }
-  virtual ThriftProxy::FilterStatus int32Value(int32_t&) override {
-    return ThriftProxy::FilterStatus::Continue;
-  }
-  virtual ThriftProxy::FilterStatus int64Value(int64_t&) override {
-    return ThriftProxy::FilterStatus::Continue;
-  }
-  virtual ThriftProxy::FilterStatus doubleValue(double&) override {
-    return ThriftProxy::FilterStatus::Continue;
-  }
-  virtual ThriftProxy::FilterStatus stringValue(absl::string_view) override {
-    return ThriftProxy::FilterStatus::Continue;
-  }
-  virtual ThriftProxy::FilterStatus mapBegin(ThriftProxy::FieldType&, ThriftProxy::FieldType&,
-                                             uint32_t&) override {
-    return ThriftProxy::FilterStatus::Continue;
-  }
-  virtual ThriftProxy::FilterStatus mapEnd() override {
-    return ThriftProxy::FilterStatus::Continue;
-  }
-  virtual ThriftProxy::FilterStatus listBegin(ThriftProxy::FieldType&, uint32_t&) override {
-    return ThriftProxy::FilterStatus::Continue;
-  }
-  virtual ThriftProxy::FilterStatus listEnd() override {
-    return ThriftProxy::FilterStatus::Continue;
-  }
-  virtual ThriftProxy::FilterStatus setBegin(ThriftProxy::FieldType&, uint32_t&) override {
-    return ThriftProxy::FilterStatus::Continue;
-  }
-  virtual ThriftProxy::FilterStatus setEnd() override {
-    return ThriftProxy::FilterStatus::Continue;
-  }
+  // ThriftFilters::PassThroughDecoderFilter
+  void onDestroy() override;
+  ThriftProxy::FilterStatus messageBegin(ThriftProxy::MessageMetadataSharedPtr) override;
 
   // RateLimit::RequestCallbacks
   void complete(Filters::Common::RateLimit::LimitStatus status,
-                Http::HeaderMapPtr&& headers) override;
+                Http::ResponseHeaderMapPtr&& response_headers_to_add,
+                Http::RequestHeaderMapPtr&& request_headers_to_add) override;
 
 private:
   void initiateCall(const ThriftProxy::MessageMetadata& metadata);
@@ -152,7 +92,6 @@ private:
 
   ConfigSharedPtr config_;
   Filters::Common::RateLimit::ClientPtr client_;
-  ThriftProxy::ThriftFilters::DecoderFilterCallbacks* callbacks_{};
   State state_{State::NotStarted};
   Upstream::ClusterInfoConstSharedPtr cluster_;
   bool initiating_call_{false};

@@ -10,7 +10,8 @@
 
 #include "envoy/access_log/access_log.h"
 #include "envoy/api/api.h"
-#include "envoy/api/v2/core/base.pb.h"
+#include "envoy/config/cluster/v3/cluster.pb.h"
+#include "envoy/config/typed_config.h"
 #include "envoy/event/dispatcher.h"
 #include "envoy/local_info/local_info.h"
 #include "envoy/network/dns.h"
@@ -98,8 +99,6 @@ public:
   virtual Ssl::ContextManager& sslContextManager() PURE;
 
   /**
-   * TODO(hyang): Remove this and only expose the scope, this would require refactoring
-   * TransportSocketFactoryContext
    * @return the server-wide stats store.
    */
   virtual Stats::Store& stats() PURE;
@@ -113,30 +112,34 @@ public:
    * @return Outlier::EventLoggerSharedPtr sink for outlier detection event logs.
    */
   virtual Outlier::EventLoggerSharedPtr outlierEventLogger() PURE;
+
+  /**
+   * @return ProtobufMessage::ValidationVisitor& validation visitor for filter configuration
+   *         messages.
+   */
+  virtual ProtobufMessage::ValidationVisitor& messageValidationVisitor() PURE;
 };
 
 /**
  * Implemented by cluster and registered via Registry::registerFactory() or the convenience class
  * RegisterFactory.
  */
-class ClusterFactory {
+class ClusterFactory : public Config::UntypedFactory {
 public:
-  virtual ~ClusterFactory() = default;
+  ~ClusterFactory() override = default;
 
   /**
    * Create a new instance of cluster. If the implementation is unable to produce a cluster instance
    * with the provided parameters, it should throw an EnvoyException in the case of general error.
    * @param cluster supplies the general protobuf configuration for the cluster.
    * @param context supplies the cluster's context.
-   * @return ClusterSharedPtr the cluster instance.
+   * @return a pair containing the cluster instance as well as an option thread aware load
+   *         balancer if this cluster has an integrated load balancer.
    */
-  virtual ClusterSharedPtr create(const envoy::api::v2::Cluster& cluster,
-                                  ClusterFactoryContext& context) PURE;
+  virtual std::pair<ClusterSharedPtr, ThreadAwareLoadBalancerPtr>
+  create(const envoy::config::cluster::v3::Cluster& cluster, ClusterFactoryContext& context) PURE;
 
-  /**
-   * @return std::string the identifying name for a particular implementation of a cluster factory.
-   */
-  virtual std::string name() PURE;
+  std::string category() const override { return "envoy.clusters"; }
 };
 
 } // namespace Upstream

@@ -14,11 +14,9 @@ namespace Cors {
 /**
  * All CORS filter stats. @see stats_macros.h
  */
-// clang-format off
-#define ALL_CORS_STATS(COUNTER)\
-  COUNTER(origin_valid)        \
-  COUNTER(origin_invalid)      \
-// clang-format on
+#define ALL_CORS_STATS(COUNTER)                                                                    \
+  COUNTER(origin_valid)                                                                            \
+  COUNTER(origin_invalid)
 
 /**
  * Struct definition for CORS stats. @see stats_macros.h
@@ -42,7 +40,7 @@ private:
 
   CorsStats stats_;
 };
-typedef std::shared_ptr<CorsFilterConfig> CorsFilterConfigSharedPtr;
+using CorsFilterConfigSharedPtr = std::shared_ptr<CorsFilterConfig>;
 
 class CorsFilter : public Http::StreamFilter {
 public:
@@ -52,24 +50,26 @@ public:
   void onDestroy() override {}
 
   // Http::StreamDecoderFilter
-  Http::FilterHeadersStatus decodeHeaders(Http::HeaderMap& headers, bool end_stream) override;
+  Http::FilterHeadersStatus decodeHeaders(Http::RequestHeaderMap& headers,
+                                          bool end_stream) override;
   Http::FilterDataStatus decodeData(Buffer::Instance&, bool) override {
     return Http::FilterDataStatus::Continue;
   };
-  Http::FilterTrailersStatus decodeTrailers(Http::HeaderMap&) override {
+  Http::FilterTrailersStatus decodeTrailers(Http::RequestTrailerMap&) override {
     return Http::FilterTrailersStatus::Continue;
   };
   void setDecoderFilterCallbacks(Http::StreamDecoderFilterCallbacks& callbacks) override;
 
   // Http::StreamEncoderFilter
-  Http::FilterHeadersStatus encode100ContinueHeaders(Http::HeaderMap&) override {
+  Http::FilterHeadersStatus encode100ContinueHeaders(Http::ResponseHeaderMap&) override {
     return Http::FilterHeadersStatus::Continue;
   }
-  Http::FilterHeadersStatus encodeHeaders(Http::HeaderMap& headers, bool end_stream) override;
+  Http::FilterHeadersStatus encodeHeaders(Http::ResponseHeaderMap& headers,
+                                          bool end_stream) override;
   Http::FilterDataStatus encodeData(Buffer::Instance&, bool) override {
     return Http::FilterDataStatus::Continue;
   };
-  Http::FilterTrailersStatus encodeTrailers(Http::HeaderMap&) override {
+  Http::FilterTrailersStatus encodeTrailers(Http::ResponseTrailerMap&) override {
     return Http::FilterTrailersStatus::Continue;
   };
   Http::FilterMetadataStatus encodeMetadata(Http::MetadataMap&) override {
@@ -82,8 +82,7 @@ public:
 private:
   friend class CorsFilterTest;
 
-  const std::list<std::string>* allowOrigins();
-  const std::list<std::regex>* allowOriginRegexes();
+  const std::vector<Matchers::StringMatcherPtr>* allowOrigins();
   const std::string& allowMethods();
   const std::string& allowHeaders();
   const std::string& exposeHeaders();
@@ -92,8 +91,6 @@ private:
   bool shadowEnabled();
   bool enabled();
   bool isOriginAllowed(const Http::HeaderString& origin);
-  bool isOriginAllowedString(const Http::HeaderString& origin);
-  bool isOriginAllowedRegex(const Http::HeaderString& origin);
 
   Http::StreamDecoderFilterCallbacks* decoder_callbacks_{};
   Http::StreamEncoderFilterCallbacks* encoder_callbacks_{};

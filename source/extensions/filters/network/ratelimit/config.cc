@@ -3,14 +3,13 @@
 #include <chrono>
 #include <string>
 
-#include "envoy/config/filter/network/rate_limit/v2/rate_limit.pb.validate.h"
+#include "envoy/extensions/filters/network/ratelimit/v3/rate_limit.pb.h"
+#include "envoy/extensions/filters/network/ratelimit/v3/rate_limit.pb.validate.h"
 #include "envoy/registry/registry.h"
 
-#include "common/config/filter_json.h"
 #include "common/protobuf/utility.h"
 
 #include "extensions/filters/common/ratelimit/ratelimit_impl.h"
-#include "extensions/filters/common/ratelimit/ratelimit_registration.h"
 #include "extensions/filters/network/ratelimit/ratelimit.h"
 
 namespace Envoy {
@@ -19,7 +18,7 @@ namespace NetworkFilters {
 namespace RateLimitFilter {
 
 Network::FilterFactoryCb RateLimitConfigFactory::createFilterFactoryFromProtoTyped(
-    const envoy::config::filter::network::rate_limit::v2::RateLimit& proto_config,
+    const envoy::extensions::filters::network::ratelimit::v3::RateLimit& proto_config,
     Server::Configuration::FactoryContext& context) {
 
   ASSERT(!proto_config.stat_prefix().empty());
@@ -29,36 +28,22 @@ Network::FilterFactoryCb RateLimitConfigFactory::createFilterFactoryFromProtoTyp
   ConfigSharedPtr filter_config(new Config(proto_config, context.scope(), context.runtime()));
   const std::chrono::milliseconds timeout =
       std::chrono::milliseconds(PROTOBUF_GET_MS_OR_DEFAULT(proto_config, timeout, 20));
-  Filters::Common::RateLimit::ClientFactoryPtr client_factory =
-      Filters::Common::RateLimit::rateLimitClientFactory(context);
-  // If ratelimit service config is provided in both bootstrap and filter, we should validate that
-  // they are same.
-  Filters::Common::RateLimit::validateRateLimitConfig<
-      const envoy::config::filter::network::rate_limit::v2::RateLimit&>(proto_config,
-                                                                        client_factory);
 
-  return [client_factory, proto_config, &context, timeout,
+  return [proto_config, &context, timeout,
           filter_config](Network::FilterManager& filter_manager) -> void {
     filter_manager.addReadFilter(std::make_shared<Filter>(
         filter_config,
 
         Filters::Common::RateLimit::rateLimitClient(
-            client_factory, context, proto_config.rate_limit_service().grpc_service(), timeout)));
+            context, proto_config.rate_limit_service().grpc_service(), timeout)));
   };
-}
-
-Network::FilterFactoryCb
-RateLimitConfigFactory::createFilterFactory(const Json::Object& json_config,
-                                            Server::Configuration::FactoryContext& context) {
-  envoy::config::filter::network::rate_limit::v2::RateLimit proto_config;
-  Envoy::Config::FilterJson::translateTcpRateLimitFilter(json_config, proto_config);
-  return createFilterFactoryFromProtoTyped(proto_config, context);
 }
 
 /**
  * Static registration for the rate limit filter. @see RegisterFactory.
  */
-REGISTER_FACTORY(RateLimitConfigFactory, Server::Configuration::NamedNetworkFilterConfigFactory);
+REGISTER_FACTORY(RateLimitConfigFactory,
+                 Server::Configuration::NamedNetworkFilterConfigFactory){"envoy.ratelimit"};
 
 } // namespace RateLimitFilter
 } // namespace NetworkFilters

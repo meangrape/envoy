@@ -22,7 +22,6 @@ class Instance;
 namespace Stats {
 
 class Sink;
-class Source;
 
 /**
  * A store for all known counters, gauges, and timers.
@@ -40,17 +39,22 @@ public:
   virtual std::vector<GaugeSharedPtr> gauges() const PURE;
 
   /**
+   * @return a list of all known text readouts.
+   */
+  virtual std::vector<TextReadoutSharedPtr> textReadouts() const PURE;
+
+  /**
    * @return a list of all known histograms.
    */
   virtual std::vector<ParentHistogramSharedPtr> histograms() const PURE;
 };
 
-typedef std::unique_ptr<Store> StorePtr;
+using StorePtr = std::unique_ptr<Store>;
 
 /**
  * Callback invoked when a store's mergeHistogram() runs.
  */
-typedef std::function<void()> PostMergeCb;
+using PostMergeCb = std::function<void()>;
 
 /**
  * The root of the stat store.
@@ -95,15 +99,9 @@ public:
    * method would be asserted.
    */
   virtual void mergeHistograms(PostMergeCb merge_complete_cb) PURE;
-
-  /**
-   * Returns the Source to provide cached metrics.
-   * @return Source& the source.
-   */
-  virtual Source& source() PURE;
 };
 
-typedef std::unique_ptr<StoreRoot> StoreRootPtr;
+using StoreRootPtr = std::unique_ptr<StoreRoot>;
 
 } // namespace Stats
 } // namespace Envoy

@@ -1,10 +1,12 @@
 #pragma once
 
+#include <bitset>
 #include <cstdint>
 #include <memory>
 #include <string>
 
-#include "envoy/api/os_sys_calls.h"
+#include "envoy/api/io_error.h"
+#include "envoy/common/platform.h"
 #include "envoy/common/pure.h"
 
 #include "absl/strings/string_view.h"
@@ -12,60 +14,72 @@
 namespace Envoy {
 namespace Filesystem {
 
+using FlagSet = std::bitset<4>;
+
 /**
  * Abstraction for a basic file on disk.
  */
 class File {
 public:
-  virtual ~File() {}
+  virtual ~File() = default;
+
+  enum Operation {
+    Read,
+    Write,
+    Create,
+    Append,
+  };
 
   /**
-   * Open the file with O_RDWR | O_APPEND | O_CREAT
+   * Open the file with Flag
    * The file will be closed when this object is destructed
    *
    * @return bool whether the open succeeded
    */
-  virtual Api::SysCallBoolResult open() PURE;
+  virtual Api::IoCallBoolResult open(FlagSet flags) PURE;
 
   /**
    * Write the buffer to the file. The file must be explicitly opened before writing.
    *
    * @return ssize_t number of bytes written, or -1 for failure
    */
-  virtual Api::SysCallSizeResult write(absl::string_view buffer) PURE;
+  virtual Api::IoCallSizeResult write(absl::string_view buffer) PURE;
 
   /**
    * Close the file.
    *
    * @return bool whether the close succeeded
    */
-  virtual Api::SysCallBoolResult close() PURE;
+  virtual Api::IoCallBoolResult close() PURE;
 
   /**
    * @return bool is the file open
    */
-  virtual bool isOpen() PURE;
+  virtual bool isOpen() const PURE;
 
   /**
    * @return string the file path
    */
-  virtual std::string path() PURE;
-
-  /**
-   * @return string a human-readable string describing the error code
-   * TODO(sesmith177) Use the IOError class after #5829 merges
-   */
-  virtual std::string errorToString(int error) PURE;
+  virtual std::string path() const PURE;
 };
 
 using FilePtr = std::unique_ptr<File>;
+
+/**
+ * Contains the result of splitting the file name and its parent directory from
+ * a given file path.
+ */
+struct PathSplitResult {
+  absl::string_view directory_;
+  absl::string_view file_;
+};
 
 /**
  * Abstraction for some basic filesystem operations
  */
 class Instance {
 public:
-  virtual ~Instance() {}
+  virtual ~Instance() = default;
 
   /**
    *  @param path The path of the File
@@ -98,10 +112,11 @@ public:
   virtual std::string fileReadToEnd(const std::string& path) PURE;
 
   /**
-   * @param path some filesystem path.
-   * @return SysCallStringResult containing the canonical path (see realpath(3)).
+   * @path file path to split
+   * @return PathSplitResult containing the parent directory of the input path and the file name
+   * @note will throw an exception if path does not contain any path separator character
    */
-  virtual Api::SysCallStringResult canonicalPath(const std::string& path) PURE;
+  virtual PathSplitResult splitPathFromFilename(absl::string_view path) PURE;
 
   /**
    * Determine if the path is on a list of paths Envoy will refuse to access. This
@@ -131,15 +146,11 @@ struct DirectoryEntry {
   }
 };
 
-/**
- * Abstraction for listing a directory.
- * TODO(sesmith177): replace with std::filesystem::directory_iterator once we move to C++17
- */
 class DirectoryIteratorImpl;
 class DirectoryIterator {
 public:
   DirectoryIterator() : entry_({"", FileType::Other}) {}
-  virtual ~DirectoryIterator() {}
+  virtual ~DirectoryIterator() = default;
 
   const DirectoryEntry& operator*() const { return entry_; }
 

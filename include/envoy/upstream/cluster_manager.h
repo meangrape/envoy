@@ -8,9 +8,12 @@
 
 #include "envoy/access_log/access_log.h"
 #include "envoy/api/api.h"
-#include "envoy/api/v2/cds.pb.h"
-#include "envoy/config/bootstrap/v2/bootstrap.pb.h"
+#include "envoy/config/bootstrap/v3/bootstrap.pb.h"
+#include "envoy/config/cluster/v3/cluster.pb.h"
+#include "envoy/config/core/v3/address.pb.h"
+#include "envoy/config/core/v3/config_source.pb.h"
 #include "envoy/config/grpc_mux.h"
+#include "envoy/config/subscription_factory.h"
 #include "envoy/grpc/async_client_manager.h"
 #include "envoy/http/async_client.h"
 #include "envoy/http/conn_pool.h"
@@ -37,7 +40,7 @@ namespace Upstream {
  */
 class ClusterUpdateCallbacks {
 public:
-  virtual ~ClusterUpdateCallbacks() {}
+  virtual ~ClusterUpdateCallbacks() = default;
 
   /**
    * onClusterAddOrUpdate is called when a new cluster is added or an existing cluster
@@ -60,10 +63,10 @@ public:
  */
 class ClusterUpdateCallbacksHandle {
 public:
-  virtual ~ClusterUpdateCallbacksHandle() {}
+  virtual ~ClusterUpdateCallbacksHandle() = default;
 };
 
-typedef std::unique_ptr<ClusterUpdateCallbacksHandle> ClusterUpdateCallbacksHandlePtr;
+using ClusterUpdateCallbacksHandlePtr = std::unique_ptr<ClusterUpdateCallbacksHandle>;
 
 class ClusterManagerFactory;
 
@@ -73,26 +76,7 @@ class ClusterManagerFactory;
  */
 class ClusterManager {
 public:
-  virtual ~ClusterManager() {}
-
-  /**
-   * Warming state a cluster is currently in. Used as an argument for the ClusterWarmingCallback.
-   */
-  enum class ClusterWarmingState {
-    // Sent after cluster warming has finished.
-    Finished = 0,
-    // Sent just before cluster warming is about to start.
-    Starting = 1,
-  };
-
-  /**
-   * Called by the ClusterManager when cluster's warming state changes
-   *
-   * @param cluster_name name of the cluster.
-   * @param warming_state state the cluster transitioned to.
-   */
-  typedef std::function<void(const std::string& cluster_name, ClusterWarmingState warming_state)>
-      ClusterWarmingCallback;
+  virtual ~ClusterManager() = default;
 
   /**
    * Add or update a cluster via API. The semantics of this API are:
@@ -104,16 +88,15 @@ public:
    * @param version_info supplies the xDS version of the cluster.
    * @return true if the action results in an add/update of a cluster.
    */
-  virtual bool addOrUpdateCluster(const envoy::api::v2::Cluster& cluster,
-                                  const std::string& version_info,
-                                  ClusterWarmingCallback cluster_warming_cb) PURE;
+  virtual bool addOrUpdateCluster(const envoy::config::cluster::v3::Cluster& cluster,
+                                  const std::string& version_info) PURE;
 
   /**
    * Set a callback that will be invoked when all owned clusters have been initialized.
    */
   virtual void setInitializedCb(std::function<void()> callback) PURE;
 
-  typedef std::unordered_map<std::string, std::reference_wrapper<const Cluster>> ClusterInfoMap;
+  using ClusterInfoMap = std::unordered_map<std::string, std::reference_wrapper<const Cluster>>;
 
   /**
    * @return ClusterInfoMap all current clusters. These are the primary (not thread local)
@@ -131,7 +114,7 @@ public:
    * If information about the cluster needs to be kept, use the ThreadLocalCluster::info() method to
    * obtain cluster information that is safe to store.
    */
-  virtual ThreadLocalCluster* get(const std::string& cluster) PURE;
+  virtual ThreadLocalCluster* get(absl::string_view cluster) PURE;
 
   /**
    * Allocate a load balanced HTTP connection pool for a cluster. This is *per-thread* so that
@@ -154,10 +137,9 @@ public:
    * Can return nullptr if there is no host available in the cluster or if the cluster does not
    * exist.
    */
-  virtual Tcp::ConnectionPool::Instance*
-  tcpConnPoolForCluster(const std::string& cluster, ResourcePriority priority,
-                        LoadBalancerContext* context,
-                        Network::TransportSocketOptionsSharedPtr transport_socket_options) PURE;
+  virtual Tcp::ConnectionPool::Instance* tcpConnPoolForCluster(const std::string& cluster,
+                                                               ResourcePriority priority,
+                                                               LoadBalancerContext* context) PURE;
 
   /**
    * Allocate a load balanced TCP connection for a cluster. The created connection is already
@@ -167,9 +149,8 @@ public:
    * Returns both a connection and the host that backs the connection. Both can be nullptr if there
    * is no host available in the cluster.
    */
-  virtual Host::CreateConnectionData
-  tcpConnForCluster(const std::string& cluster, LoadBalancerContext* context,
-                    Network::TransportSocketOptionsSharedPtr transport_socket_options) PURE;
+  virtual Host::CreateConnectionData tcpConnForCluster(const std::string& cluster,
+                                                       LoadBalancerContext* context) PURE;
 
   /**
    * Returns a client that can be used to make async HTTP calls against the given cluster. The
@@ -196,17 +177,17 @@ public:
    * @return const envoy::api::v2::core::BindConfig& cluster manager wide bind configuration for new
    *         upstream connections.
    */
-  virtual const envoy::api::v2::core::BindConfig& bindConfig() const PURE;
+  virtual const envoy::config::core::v3::BindConfig& bindConfig() const PURE;
 
   /**
-   * Return a reference to the singleton ADS provider for upstream control plane muxing of xDS. This
-   * is treated somewhat as a special case in ClusterManager, since it does not relate logically to
-   * the management of clusters but instead is required early in ClusterManager/server
+   * Returns a shared_ptr to the singleton xDS-over-gRPC provider for upstream control plane muxing
+   * of xDS. This is treated somewhat as a special case in ClusterManager, since it does not relate
+   * logically to the management of clusters but instead is required early in ClusterManager/server
    * initialization and in various sites that need ClusterManager for xDS API interfacing.
    *
    * @return GrpcMux& ADS API provider referencee.
    */
-  virtual Config::GrpcMux& adsMux() PURE;
+  virtual Config::GrpcMuxSharedPtr adsMux() PURE;
 
   /**
    * @return Grpc::AsyncClientManager& the cluster manager's gRPC client manager.
@@ -216,9 +197,10 @@ public:
   /**
    * Return the local cluster name, if it was configured.
    *
-   * @return std::string the local cluster name, or "" if no local cluster was configured.
+   * @return absl::optional<std::string> the local cluster name, or empty if no local cluster was
+   * configured.
    */
-  virtual const std::string& localClusterName() const PURE;
+  virtual const absl::optional<std::string>& localClusterName() const PURE;
 
   /**
    * This method allows to register callbacks for cluster lifecycle events in the ClusterManager.
@@ -233,19 +215,28 @@ public:
   virtual ClusterUpdateCallbacksHandlePtr
   addThreadLocalClusterUpdateCallbacks(ClusterUpdateCallbacks& callbacks) PURE;
 
+  /**
+   * Return the factory to use for creating cluster manager related objects.
+   */
   virtual ClusterManagerFactory& clusterManagerFactory() PURE;
 
-  virtual std::size_t warmingClusterCount() const PURE;
+  /**
+   * Obtain the subscription factory for the cluster manager. Since subscriptions may have an
+   * upstream component, the factory is a facet of the cluster manager.
+   *
+   * @return Config::SubscriptionFactory& the subscription factory.
+   */
+  virtual Config::SubscriptionFactory& subscriptionFactory() PURE;
 };
 
-typedef std::unique_ptr<ClusterManager> ClusterManagerPtr;
+using ClusterManagerPtr = std::unique_ptr<ClusterManager>;
 
 /**
  * Abstract interface for a CDS API provider.
  */
 class CdsApi {
 public:
-  virtual ~CdsApi() {}
+  virtual ~CdsApi() = default;
 
   /**
    * Start the first fetch of CDS data.
@@ -264,20 +255,20 @@ public:
   virtual const std::string versionInfo() const PURE;
 };
 
-typedef std::unique_ptr<CdsApi> CdsApiPtr;
+using CdsApiPtr = std::unique_ptr<CdsApi>;
 
 /**
  * Factory for objects needed during cluster manager operation.
  */
 class ClusterManagerFactory {
 public:
-  virtual ~ClusterManagerFactory() {}
+  virtual ~ClusterManagerFactory() = default;
 
   /**
    * Allocate a cluster manager from configuration proto.
    */
   virtual ClusterManagerPtr
-  clusterManagerFromProto(const envoy::config::bootstrap::v2::Bootstrap& bootstrap) PURE;
+  clusterManagerFromProto(const envoy::config::bootstrap::v3::Bootstrap& bootstrap) PURE;
 
   /**
    * Allocate an HTTP connection pool for the host. Pools are separated by 'priority',
@@ -286,7 +277,8 @@ public:
   virtual Http::ConnectionPool::InstancePtr
   allocateConnPool(Event::Dispatcher& dispatcher, HostConstSharedPtr host,
                    ResourcePriority priority, Http::Protocol protocol,
-                   const Network::ConnectionSocket::OptionsSharedPtr& options) PURE;
+                   const Network::ConnectionSocket::OptionsSharedPtr& options,
+                   const Network::TransportSocketOptionsSharedPtr& transport_socket_options) PURE;
 
   /**
    * Allocate a TCP connection pool for the host. Pools are separated by 'priority' and
@@ -301,15 +293,14 @@ public:
   /**
    * Allocate a cluster from configuration proto.
    */
-  virtual ClusterSharedPtr clusterFromProto(const envoy::api::v2::Cluster& cluster,
-                                            ClusterManager& cm,
-                                            Outlier::EventLoggerSharedPtr outlier_event_logger,
-                                            bool added_via_api) PURE;
+  virtual std::pair<ClusterSharedPtr, ThreadAwareLoadBalancerPtr>
+  clusterFromProto(const envoy::config::cluster::v3::Cluster& cluster, ClusterManager& cm,
+                   Outlier::EventLoggerSharedPtr outlier_event_logger, bool added_via_api) PURE;
 
   /**
    * Create a CDS API provider from configuration proto.
    */
-  virtual CdsApiPtr createCds(const envoy::api::v2::core::ConfigSource& cds_config,
+  virtual CdsApiPtr createCds(const envoy::config::core::v3::ConfigSource& cds_config,
                               ClusterManager& cm) PURE;
 
   /**
@@ -323,7 +314,7 @@ public:
  */
 class ClusterInfoFactory {
 public:
-  virtual ~ClusterInfoFactory() {}
+  virtual ~ClusterInfoFactory() = default;
 
   /**
    * Parameters for createClusterInfo().
@@ -331,8 +322,8 @@ public:
   struct CreateClusterInfoParams {
     Server::Admin& admin_;
     Runtime::Loader& runtime_;
-    const envoy::api::v2::Cluster& cluster_;
-    const envoy::api::v2::core::BindConfig& bind_config_;
+    const envoy::config::cluster::v3::Cluster& cluster_;
+    const envoy::config::core::v3::BindConfig& bind_config_;
     Stats::Store& stats_;
     Ssl::ContextManager& ssl_context_manager_;
     const bool added_via_api_;
@@ -342,6 +333,7 @@ public:
     Runtime::RandomGenerator& random_;
     Singleton::Manager& singleton_manager_;
     ThreadLocal::SlotAllocator& tls_;
+    ProtobufMessage::ValidationVisitor& validation_visitor_;
     Api::Api& api_;
   };
 

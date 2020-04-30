@@ -1,3 +1,5 @@
+#include "envoy/config/resource_monitor/fixed_heap/v2alpha/fixed_heap.pb.h"
+
 #include "extensions/resource_monitors/fixed_heap/fixed_heap_monitor.h"
 
 #include "absl/types/optional.h"
@@ -12,10 +14,10 @@ namespace {
 
 class MockMemoryStatsReader : public MemoryStatsReader {
 public:
-  MockMemoryStatsReader() {}
+  MockMemoryStatsReader() = default;
 
-  MOCK_METHOD0(reservedHeapBytes, uint64_t());
-  MOCK_METHOD0(unmappedHeapBytes, uint64_t());
+  MOCK_METHOD(uint64_t, reservedHeapBytes, ());
+  MOCK_METHOD(uint64_t, unmappedHeapBytes, ());
 };
 
 class ResourcePressure : public Server::ResourceMonitor::Callbacks {

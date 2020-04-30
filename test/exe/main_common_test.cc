@@ -1,4 +1,4 @@
-#include <unistd.h>
+#include "envoy/common/platform.h"
 
 #include "common/common/lock_guard.h"
 #include "common/common/mutex_tracer_impl.h"
@@ -16,7 +16,7 @@
 #include "gtest/gtest.h"
 
 #ifdef ENVOY_HANDLE_SIGNALS
-#include "exe/signal_action.h"
+#include "common/signal/signal_action.h"
 #endif
 
 #include "absl/synchronization/notification.h"
@@ -30,30 +30,17 @@ namespace Envoy {
  * Captures common functions needed for invoking MainCommon. Generates a
  * unique --base-id setting based on the pid and a random number. Maintains
  * an argv array that is terminated with nullptr. Identifies the config
- * file relative to $TEST_RUNDIR.
+ * file relative to runfiles directory.
  */
 class MainCommonTest : public testing::TestWithParam<Network::Address::IpVersion> {
 protected:
   MainCommonTest()
       : config_file_(TestEnvironment::temporaryFileSubstitute(
-            "/test/config/integration/google_com_proxy_port_0.v2.yaml", TestEnvironment::ParamMap(),
+            "test/config/integration/google_com_proxy_port_0.v2.yaml", TestEnvironment::ParamMap(),
             TestEnvironment::PortMap(), GetParam())),
         random_string_(fmt::format("{}", computeBaseId())),
         argv_({"envoy-static", "--base-id", random_string_.c_str(), "-c", config_file_.c_str(),
-               nullptr}) {
-    // The test main() sets the ThreadFactorySingleton since it is required by all other tests not
-    // instantiating their own MainCommon.
-    // Reset the singleton to a nullptr to avoid triggering an assertion when MainCommonBase() calls
-    // set() in the tests below.
-    Thread::ThreadFactorySingleton::set(nullptr);
-  }
-
-  ~MainCommonTest() override {
-    // This is ugly, but necessary to enable a stronger ASSERT() in ThreadFactorySingleton::set().
-    // The singleton needs to be reset to a non nullptr value such that when the constructor runs
-    // again, the ThreadFactorySingleton::set(nullptr) does not trigger the assertion.
-    Thread::ThreadFactorySingleton::set(&Thread::threadFactoryForTest());
-  }
+               nullptr}) {}
 
   /**
    * Computes a numeric ID to incorporate into the names of
@@ -72,7 +59,12 @@ protected:
     // Pick a prime number to give more of the 32-bits of entropy to the PID, and the
     // remainder to the random number.
     const uint32_t four_digit_prime = 7919;
+#ifdef WIN32
+    return ::GetCurrentProcessId() * four_digit_prime +
+           random_generator_.random() % four_digit_prime;
+#else
     return getpid() * four_digit_prime + random_generator_.random() % four_digit_prime;
+#endif
   }
 
   const char* const* argv() { return &argv_[0]; }
@@ -134,12 +126,13 @@ TEST_P(MainCommonDeathTest, OutOfMemoryHandler) {
                  "MainCommonTest::OutOfMemoryHandler not supported by this compiler configuration");
 #else
   MainCommon main_common(argc(), argv());
+#if !defined(WIN32)
+  // Resolving symbols for a backtrace takes longer than the timeout in coverage builds,
+  // so disable handling that signal.
+  signal(SIGABRT, SIG_DFL);
+#endif
   EXPECT_DEATH_LOG_TO_STDERR(
       []() {
-        // Resolving symbols for a backtrace takes longer than the timeout in coverage builds,
-        // so disable handling that signal.
-        signal(SIGABRT, SIG_DFL);
-
         // Allocating a fixed-size large array that results in OOM on gcc
         // results in a compile-time error on clang of "array size too big",
         // so dynamically find a size that is too large.
@@ -160,11 +153,7 @@ INSTANTIATE_TEST_SUITE_P(IpVersions, MainCommonTest,
 
 class AdminRequestTest : public MainCommonTest {
 protected:
-  AdminRequestTest()
-      : envoy_return_(false), envoy_started_(false), envoy_finished_(false),
-        pause_before_run_(false), pause_after_run_(false) {
-    addArg("--disable-hot-restart");
-  }
+  AdminRequestTest() { addArg("--disable-hot-restart"); }
 
   // Runs an admin request specified in path, blocking until completion, and
   // returning the response body.
@@ -223,7 +212,7 @@ protected:
     main_common_->dispatcherForTest().post([this, &done] {
       struct Sacrifice : Event::DeferredDeletable {
         Sacrifice(absl::Notification& notify) : notify_(notify) {}
-        ~Sacrifice() { notify_.Notify(); }
+        ~Sacrifice() override { notify_.Notify(); }
         absl::Notification& notify_;
       };
       auto sacrifice = std::make_unique<Sacrifice>(done);
@@ -247,21 +236,23 @@ protected:
   absl::Notification finished_;
   absl::Notification resume_;
   absl::Notification pause_point_;
-  bool envoy_return_;
-  bool envoy_started_;
-  bool envoy_finished_;
-  bool pause_before_run_;
-  bool pause_after_run_;
+  bool envoy_return_{false};
+  bool envoy_started_{false};
+  bool envoy_finished_{false};
+  bool pause_before_run_{false};
+  bool pause_after_run_{false};
 };
 
 TEST_P(AdminRequestTest, AdminRequestGetStatsAndQuit) {
   startEnvoy();
   started_.WaitForNotification();
-  EXPECT_THAT(adminRequest("/stats", "GET"), HasSubstr("access_log_file.reopen_failed"));
+  EXPECT_THAT(adminRequest("/stats", "GET"), HasSubstr("filesystem.reopen_failed"));
   adminRequest("/quitquitquit", "POST");
   EXPECT_TRUE(waitForEnvoyToExit());
 }
 
+// no signals on Windows -- could probably make this work with GenerateConsoleCtrlEvent
+#ifndef WIN32
 // This test is identical to the above one, except that instead of using an admin /quitquitquit,
 // we send ourselves a SIGTERM, which should have the same effect.
 TEST_P(AdminRequestTest, AdminRequestGetStatsAndKill) {
@@ -270,7 +261,7 @@ TEST_P(AdminRequestTest, AdminRequestGetStatsAndKill) {
   // TODO(htuch): Remove when https://github.com/libevent/libevent/issues/779 is
   // fixed, started_ will then become our real synchronization point.
   waitForEnvoyRun();
-  EXPECT_THAT(adminRequest("/stats", "GET"), HasSubstr("access_log_file.reopen_failed"));
+  EXPECT_THAT(adminRequest("/stats", "GET"), HasSubstr("filesystem.reopen_failed"));
   kill(getpid(), SIGTERM);
   EXPECT_TRUE(waitForEnvoyToExit());
 }
@@ -283,7 +274,7 @@ TEST_P(AdminRequestTest, AdminRequestGetStatsAndCtrlC) {
   // TODO(htuch): Remove when https://github.com/libevent/libevent/issues/779 is
   // fixed, started_ will then become our real synchronization point.
   waitForEnvoyRun();
-  EXPECT_THAT(adminRequest("/stats", "GET"), HasSubstr("access_log_file.reopen_failed"));
+  EXPECT_THAT(adminRequest("/stats", "GET"), HasSubstr("filesystem.reopen_failed"));
   kill(getpid(), SIGINT);
   EXPECT_TRUE(waitForEnvoyToExit());
 }
@@ -308,7 +299,7 @@ TEST_P(AdminRequestTest, AdminRequestContentionEnabled) {
   waitForEnvoyRun();
 
   // Induce contention to guarantee a non-zero num_contentions count.
-  Thread::TestUtil::ContentionGenerator contention_generator;
+  Thread::TestUtil::ContentionGenerator contention_generator(main_common_->server()->api());
   contention_generator.generateContention(MutexTracerImpl::getOrCreateTracer());
 
   std::string response = adminRequest("/contention", "GET");
@@ -319,6 +310,7 @@ TEST_P(AdminRequestTest, AdminRequestContentionEnabled) {
   kill(getpid(), SIGTERM);
   EXPECT_TRUE(waitForEnvoyToExit());
 }
+#endif
 
 TEST_P(AdminRequestTest, AdminRequestBeforeRun) {
   // Induce the situation where the Envoy thread is active, and main_common_ is constructed,
@@ -352,7 +344,7 @@ TEST_P(AdminRequestTest, AdminRequestBeforeRun) {
   EXPECT_TRUE(admin_handler_was_called);
 
   // This just checks that some stat output was reported. We could pick any stat.
-  EXPECT_THAT(out, HasSubstr("access_log_file.reopen_failed"));
+  EXPECT_THAT(out, HasSubstr("filesystem.reopen_failed"));
 }
 
 // Class to track whether an object has been destroyed, which it does by bumping an atomic.
@@ -409,7 +401,7 @@ TEST_P(MainCommonTest, ConstructDestructLogger) {
   VERBOSE_EXPECT_NO_THROW(MainCommon main_common(argc(), argv()));
 
   const std::string logger_name = "logger";
-  spdlog::details::log_msg log_msg(&logger_name, spdlog::level::level_enum::err, "error");
+  spdlog::details::log_msg log_msg(logger_name, spdlog::level::level_enum::err, "error");
   Logger::Registry::getSink()->log(log_msg);
 }
 

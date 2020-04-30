@@ -1,48 +1,44 @@
 #include "utility.h"
 
-#ifdef WIN32
-#include <windows.h>
-// <windows.h> uses macros to #define a ton of symbols, two of which (DELETE and GetMessage)
-// interfere with our code. DELETE shows up in the base.pb.h header generated from
-// api/envoy/api/core/base.proto. Since it's a generated header, we can't #undef DELETE at
-// the top of that header to avoid the collision. Similarly, GetMessage shows up in generated
-// protobuf code so we can't #undef the symbol there.
-#undef DELETE
-#undef GetMessage
-#endif
-
 #include <cstdint>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <list>
+#include <regex>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "envoy/buffer/buffer.h"
+#include "envoy/common/platform.h"
+#include "envoy/config/cluster/v3/cluster.pb.h"
+#include "envoy/config/endpoint/v3/endpoint.pb.h"
+#include "envoy/config/listener/v3/listener.pb.h"
+#include "envoy/config/route/v3/route.pb.h"
+#include "envoy/config/route/v3/route_components.pb.h"
 #include "envoy/http/codec.h"
+#include "envoy/service/runtime/v3/rtds.pb.h"
 
 #include "common/api/api_impl.h"
-#include "common/common/empty_string.h"
 #include "common/common/fmt.h"
 #include "common/common/lock_guard.h"
-#include "common/common/stack_array.h"
 #include "common/common/thread_impl.h"
 #include "common/common/utility.h"
-#include "common/config/bootstrap_json.h"
+#include "common/filesystem/directory.h"
+#include "common/filesystem/filesystem_impl.h"
 #include "common/json/json_loader.h"
 #include "common/network/address_impl.h"
 #include "common/network/utility.h"
-#include "common/stats/stats_options_impl.h"
-#include "common/filesystem/directory.h"
 
+#include "test/mocks/stats/mocks.h"
 #include "test/test_common/printers.h"
+#include "test/test_common/resources.h"
 #include "test/test_common/test_time.h"
 
+#include "absl/container/fixed_array.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
-#include "test/mocks/stats/mocks.h"
 #include "gtest/gtest.h"
 
 using testing::GTEST_FLAG(random_seed);
@@ -81,8 +77,8 @@ bool TestUtility::headerMapEqualIgnoreOrder(const Http::HeaderMap& lhs,
       [](const Http::HeaderEntry& header, void* context) -> Http::HeaderMap::Iterate {
         State* state = static_cast<State*>(context);
         const Http::HeaderEntry* entry =
-            state->lhs.get(Http::LowerCaseString(std::string(header.key().c_str())));
-        if (entry == nullptr || (entry->value() != header.value().c_str())) {
+            state->lhs.get(Http::LowerCaseString(std::string(header.key().getStringView())));
+        if (entry == nullptr || (entry->value() != header.value().getStringView())) {
           state->equal = false;
           return Http::HeaderMap::Iterate::Break;
         }
@@ -101,22 +97,19 @@ bool TestUtility::buffersEqual(const Buffer::Instance& lhs, const Buffer::Instan
   // Check whether the two buffers contain the same content. It is valid for the content
   // to be arranged differently in the buffers. For example, lhs could have one slice
   // containing 10 bytes while rhs has ten slices containing one byte each.
-  uint64_t lhs_num_slices = lhs.getRawSlices(nullptr, 0);
-  uint64_t rhs_num_slices = rhs.getRawSlices(nullptr, 0);
-  STACK_ARRAY(lhs_slices, Buffer::RawSlice, lhs_num_slices);
-  lhs.getRawSlices(lhs_slices.begin(), lhs_num_slices);
-  STACK_ARRAY(rhs_slices, Buffer::RawSlice, rhs_num_slices);
-  rhs.getRawSlices(rhs_slices.begin(), rhs_num_slices);
+  Buffer::RawSliceVector lhs_slices = lhs.getRawSlices();
+  Buffer::RawSliceVector rhs_slices = rhs.getRawSlices();
+
   size_t rhs_slice = 0;
   size_t rhs_offset = 0;
-  for (size_t lhs_slice = 0; lhs_slice < lhs_num_slices; lhs_slice++) {
-    for (size_t lhs_offset = 0; lhs_offset < lhs_slices[lhs_slice].len_; lhs_offset++) {
+  for (auto& lhs_slice : lhs_slices) {
+    for (size_t lhs_offset = 0; lhs_offset < lhs_slice.len_; lhs_offset++) {
       while (rhs_offset >= rhs_slices[rhs_slice].len_) {
         rhs_slice++;
-        ASSERT(rhs_slice < rhs_num_slices);
+        ASSERT(rhs_slice < rhs_slices.size());
         rhs_offset = 0;
       }
-      auto lhs_str = static_cast<const uint8_t*>(lhs_slices[lhs_slice].mem_);
+      auto lhs_str = static_cast<const uint8_t*>(lhs_slice.mem_);
       auto rhs_str = static_cast<const uint8_t*>(rhs_slices[rhs_slice].mem_);
       if (lhs_str[lhs_offset] != rhs_str[rhs_offset]) {
         return false;
@@ -148,11 +141,45 @@ Stats::GaugeSharedPtr TestUtility::findGauge(Stats::Store& store, const std::str
   return findByName(store.gauges(), name);
 }
 
-std::list<Network::Address::InstanceConstSharedPtr>
-TestUtility::makeDnsResponse(const std::list<std::string>& addresses) {
-  std::list<Network::Address::InstanceConstSharedPtr> ret;
+Stats::TextReadoutSharedPtr TestUtility::findTextReadout(Stats::Store& store,
+                                                         const std::string& name) {
+  return findByName(store.textReadouts(), name);
+}
+
+void TestUtility::waitForCounterEq(Stats::Store& store, const std::string& name, uint64_t value,
+                                   Event::TestTimeSystem& time_system) {
+  while (findCounter(store, name) == nullptr || findCounter(store, name)->value() != value) {
+    time_system.advanceTimeWait(std::chrono::milliseconds(10));
+  }
+}
+
+void TestUtility::waitForCounterGe(Stats::Store& store, const std::string& name, uint64_t value,
+                                   Event::TestTimeSystem& time_system) {
+  while (findCounter(store, name) == nullptr || findCounter(store, name)->value() < value) {
+    time_system.advanceTimeWait(std::chrono::milliseconds(10));
+  }
+}
+
+void TestUtility::waitForGaugeGe(Stats::Store& store, const std::string& name, uint64_t value,
+                                 Event::TestTimeSystem& time_system) {
+  while (findGauge(store, name) == nullptr || findGauge(store, name)->value() < value) {
+    time_system.advanceTimeWait(std::chrono::milliseconds(10));
+  }
+}
+
+void TestUtility::waitForGaugeEq(Stats::Store& store, const std::string& name, uint64_t value,
+                                 Event::TestTimeSystem& time_system) {
+  while (findGauge(store, name) == nullptr || findGauge(store, name)->value() != value) {
+    time_system.advanceTimeWait(std::chrono::milliseconds(10));
+  }
+}
+
+std::list<Network::DnsResponse>
+TestUtility::makeDnsResponse(const std::list<std::string>& addresses, std::chrono::seconds ttl) {
+  std::list<Network::DnsResponse> ret;
   for (const auto& address : addresses) {
-    ret.emplace_back(Network::Utility::parseInternetAddress(address));
+
+    ret.emplace_back(Network::DnsResponse(Network::Utility::parseInternetAddress(address), ttl));
   }
   return ret;
 }
@@ -174,13 +201,35 @@ std::vector<std::string> TestUtility::listFiles(const std::string& path, bool re
   return file_names;
 }
 
-envoy::config::bootstrap::v2::Bootstrap
-TestUtility::parseBootstrapFromJson(const std::string& json_string) {
-  envoy::config::bootstrap::v2::Bootstrap bootstrap;
-  auto json_object_ptr = Json::Factory::loadFromString(json_string);
-  Stats::StatsOptionsImpl stats_options;
-  Config::BootstrapJson::translateBootstrap(*json_object_ptr, bootstrap, stats_options);
-  return bootstrap;
+std::string TestUtility::xdsResourceName(const ProtobufWkt::Any& resource) {
+  if (resource.type_url() == Config::TypeUrl::get().Listener) {
+    return TestUtility::anyConvert<envoy::config::listener::v3::Listener>(resource).name();
+  }
+  if (resource.type_url() == Config::TypeUrl::get().RouteConfiguration) {
+    return TestUtility::anyConvert<envoy::config::route::v3::RouteConfiguration>(resource).name();
+  }
+  if (resource.type_url() == Config::TypeUrl::get().Cluster) {
+    return TestUtility::anyConvert<envoy::config::cluster::v3::Cluster>(resource).name();
+  }
+  if (resource.type_url() == Config::TypeUrl::get().ClusterLoadAssignment) {
+    return TestUtility::anyConvert<envoy::config::endpoint::v3::ClusterLoadAssignment>(resource)
+        .cluster_name();
+  }
+  if (resource.type_url() == Config::TypeUrl::get().VirtualHost) {
+    return TestUtility::anyConvert<envoy::config::route::v3::VirtualHost>(resource).name();
+  }
+  if (resource.type_url() == Config::TypeUrl::get().Runtime) {
+    return TestUtility::anyConvert<envoy::service::runtime::v3::Runtime>(resource).name();
+  }
+  throw EnvoyException(
+      absl::StrCat("xdsResourceName does not know about type URL ", resource.type_url()));
+}
+
+std::string TestUtility::addLeftAndRightPadding(absl::string_view to_pad, int desired_length) {
+  int line_fill_len = desired_length - to_pad.length();
+  int first_half_len = line_fill_len / 2;
+  int second_half_len = line_fill_len - first_half_len;
+  return absl::StrCat(std::string(first_half_len, '='), to_pad, std::string(second_half_len, '='));
 }
 
 std::vector<std::string> TestUtility::split(const std::string& source, char split) {
@@ -194,43 +243,6 @@ std::vector<std::string> TestUtility::split(const std::string& source, const std
   std::transform(tokens_sv.begin(), tokens_sv.end(), std::back_inserter(ret),
                  [](absl::string_view sv) { return std::string(sv); });
   return ret;
-}
-
-void TestUtility::renameFile(const std::string& old_name, const std::string& new_name) {
-#ifdef WIN32
-  // use MoveFileEx, since ::rename will not overwrite an existing file. See
-  // https://docs.microsoft.com/en-us/cpp/c-runtime-library/reference/rename-wrename?view=vs-2017
-  const BOOL rc = ::MoveFileEx(old_name.c_str(), new_name.c_str(), MOVEFILE_REPLACE_EXISTING);
-  ASSERT_NE(0, rc);
-#else
-  const int rc = ::rename(old_name.c_str(), new_name.c_str());
-  ASSERT_EQ(0, rc);
-#endif
-};
-
-void TestUtility::createDirectory(const std::string& name) {
-#ifdef WIN32
-  ::_mkdir(name.c_str());
-#else
-  ::mkdir(name.c_str(), S_IRWXU);
-#endif
-}
-
-void TestUtility::createSymlink(const std::string& target, const std::string& link) {
-#ifdef WIN32
-  const DWORD attributes = ::GetFileAttributes(target.c_str());
-  ASSERT_NE(attributes, INVALID_FILE_ATTRIBUTES);
-  int flags = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
-  if (attributes & FILE_ATTRIBUTE_DIRECTORY) {
-    flags |= SYMBOLIC_LINK_FLAG_DIRECTORY;
-  }
-
-  const BOOLEAN rc = ::CreateSymbolicLink(link.c_str(), target.c_str(), flags);
-  ASSERT_NE(rc, 0);
-#else
-  const int rc = ::symlink(target.c_str(), link.c_str());
-  ASSERT_EQ(rc, 0);
-#endif
 }
 
 // static
@@ -260,6 +272,39 @@ std::string TestUtility::convertTime(const std::string& input, const std::string
   return TestUtility::formatTime(TestUtility::parseTime(input, input_format), output_format);
 }
 
+// static
+std::string TestUtility::nonZeroedGauges(const std::vector<Stats::GaugeSharedPtr>& gauges) {
+  // Returns all gauges that are 0 except the circuit_breaker remaining resource
+  // gauges which default to the resource max.
+  std::regex omitted(".*circuit_breakers\\..*\\.remaining.*");
+  std::string non_zero;
+  for (const Stats::GaugeSharedPtr& gauge : gauges) {
+    if (!std::regex_match(gauge->name(), omitted) && gauge->value() != 0) {
+      non_zero.append(fmt::format("{}: {}; ", gauge->name(), gauge->value()));
+    }
+  }
+  return non_zero;
+}
+
+// static
+bool TestUtility::gaugesZeroed(const std::vector<Stats::GaugeSharedPtr>& gauges) {
+  return nonZeroedGauges(gauges).empty();
+}
+
+// static
+bool TestUtility::gaugesZeroed(
+    const std::vector<std::pair<absl::string_view, Stats::PrimitiveGaugeReference>>& gauges) {
+  // Returns true if all gauges are 0 except the circuit_breaker remaining resource
+  // gauges which default to the resource max.
+  std::regex omitted(".*circuit_breakers\\..*\\.remaining.*");
+  for (const auto& gauge : gauges) {
+    if (!std::regex_match(std::string(gauge.first), omitted) && gauge.second.get().value() != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
 void ConditionalInitializer::setReady() {
   Thread::LockGuard lock(mutex_);
   EXPECT_FALSE(ready_);
@@ -286,119 +331,7 @@ void ConditionalInitializer::wait() {
   }
 }
 
-AtomicFileUpdater::AtomicFileUpdater(const std::string& filename)
-    : link_(filename), new_link_(absl::StrCat(filename, ".new")),
-      target1_(absl::StrCat(filename, ".target1")), target2_(absl::StrCat(filename, ".target2")),
-      use_target1_(true) {
-  unlink(link_.c_str());
-  unlink(new_link_.c_str());
-  unlink(target1_.c_str());
-  unlink(target2_.c_str());
-}
-
-void AtomicFileUpdater::update(const std::string& contents) {
-  const std::string target = use_target1_ ? target1_ : target2_;
-  use_target1_ = !use_target1_;
-  {
-    std::ofstream file(target);
-    file << contents;
-  }
-  TestUtility::createSymlink(target, new_link_);
-  TestUtility::renameFile(new_link_, link_);
-}
-
 constexpr std::chrono::milliseconds TestUtility::DefaultTimeout;
-
-namespace Http {
-
-// Satisfy linker
-const uint32_t Http2Settings::DEFAULT_HPACK_TABLE_SIZE;
-const uint32_t Http2Settings::DEFAULT_MAX_CONCURRENT_STREAMS;
-const uint32_t Http2Settings::DEFAULT_INITIAL_STREAM_WINDOW_SIZE;
-const uint32_t Http2Settings::DEFAULT_INITIAL_CONNECTION_WINDOW_SIZE;
-const uint32_t Http2Settings::MIN_INITIAL_STREAM_WINDOW_SIZE;
-
-TestHeaderMapImpl::TestHeaderMapImpl() : HeaderMapImpl() {}
-
-TestHeaderMapImpl::TestHeaderMapImpl(
-    const std::initializer_list<std::pair<std::string, std::string>>& values)
-    : HeaderMapImpl() {
-  for (auto& value : values) {
-    addCopy(value.first, value.second);
-  }
-}
-
-TestHeaderMapImpl::TestHeaderMapImpl(const HeaderMap& rhs) : HeaderMapImpl(rhs) {}
-
-TestHeaderMapImpl::TestHeaderMapImpl(const TestHeaderMapImpl& rhs)
-    : TestHeaderMapImpl(static_cast<const HeaderMap&>(rhs)) {}
-
-TestHeaderMapImpl& TestHeaderMapImpl::operator=(const TestHeaderMapImpl& rhs) {
-  if (&rhs == this) {
-    return *this;
-  }
-
-  clear();
-  copyFrom(rhs);
-
-  return *this;
-}
-
-void TestHeaderMapImpl::addCopy(const std::string& key, const std::string& value) {
-  addCopy(LowerCaseString(key), value);
-}
-
-void TestHeaderMapImpl::remove(const std::string& key) { remove(LowerCaseString(key)); }
-
-std::string TestHeaderMapImpl::get_(const std::string& key) { return get_(LowerCaseString(key)); }
-
-std::string TestHeaderMapImpl::get_(const LowerCaseString& key) {
-  const HeaderEntry* header = get(key);
-  if (!header) {
-    return EMPTY_STRING;
-  } else {
-    return header->value().c_str();
-  }
-}
-
-bool TestHeaderMapImpl::has(const std::string& key) { return get(LowerCaseString(key)) != nullptr; }
-
-bool TestHeaderMapImpl::has(const LowerCaseString& key) { return get(key) != nullptr; }
-
-} // namespace Http
-
-namespace Stats {
-
-MockedTestAllocator::MockedTestAllocator(const StatsOptions& stats_options)
-    : TestAllocator(stats_options) {
-  ON_CALL(*this, alloc(_)).WillByDefault(Invoke([this](absl::string_view name) -> RawStatData* {
-    return TestAllocator::alloc(name);
-  }));
-
-  ON_CALL(*this, free(_)).WillByDefault(Invoke([this](RawStatData& data) -> void {
-    return TestAllocator::free(data);
-  }));
-
-  EXPECT_CALL(*this, alloc(absl::string_view("stats.overflow")));
-}
-
-MockedTestAllocator::~MockedTestAllocator() {}
-
-} // namespace Stats
-
-namespace Thread {
-
-// TODO(sesmith177) Tests should get the ThreadFactory from the same location as the main code
-ThreadFactory& threadFactoryForTest() {
-#ifdef WIN32
-  static ThreadFactoryImplWin32* thread_factory = new ThreadFactoryImplWin32();
-#else
-  static ThreadFactoryImplPosix* thread_factory = new ThreadFactoryImplPosix();
-#endif
-  return *thread_factory;
-}
-
-} // namespace Thread
 
 namespace Api {
 
@@ -410,26 +343,34 @@ protected:
 
 class TestImpl : public TestImplProvider, public Impl {
 public:
-  TestImpl(Thread::ThreadFactory& thread_factory, Stats::Store& stats_store)
-      : Impl(thread_factory, stats_store, global_time_system_) {}
-  TestImpl(Thread::ThreadFactory& thread_factory, Event::TimeSystem& time_system)
-      : Impl(thread_factory, default_stats_store_, time_system) {}
-  TestImpl(Thread::ThreadFactory& thread_factory)
-      : Impl(thread_factory, default_stats_store_, global_time_system_) {}
+  TestImpl(Thread::ThreadFactory& thread_factory, Stats::Store& stats_store,
+           Filesystem::Instance& file_system)
+      : Impl(thread_factory, stats_store, global_time_system_, file_system) {}
+  TestImpl(Thread::ThreadFactory& thread_factory, Event::TimeSystem& time_system,
+           Filesystem::Instance& file_system)
+      : Impl(thread_factory, default_stats_store_, time_system, file_system) {}
+  TestImpl(Thread::ThreadFactory& thread_factory, Filesystem::Instance& file_system)
+      : Impl(thread_factory, default_stats_store_, global_time_system_, file_system) {}
 };
 
-ApiPtr createApiForTest() { return std::make_unique<TestImpl>(Thread::threadFactoryForTest()); }
+ApiPtr createApiForTest() {
+  return std::make_unique<TestImpl>(Thread::threadFactoryForTest(),
+                                    Filesystem::fileSystemForTest());
+}
 
 ApiPtr createApiForTest(Stats::Store& stat_store) {
-  return std::make_unique<TestImpl>(Thread::threadFactoryForTest(), stat_store);
+  return std::make_unique<TestImpl>(Thread::threadFactoryForTest(), stat_store,
+                                    Filesystem::fileSystemForTest());
 }
 
 ApiPtr createApiForTest(Event::TimeSystem& time_system) {
-  return std::make_unique<TestImpl>(Thread::threadFactoryForTest(), time_system);
+  return std::make_unique<TestImpl>(Thread::threadFactoryForTest(), time_system,
+                                    Filesystem::fileSystemForTest());
 }
 
 ApiPtr createApiForTest(Stats::Store& stat_store, Event::TimeSystem& time_system) {
-  return std::make_unique<Impl>(Thread::threadFactoryForTest(), stat_store, time_system);
+  return std::make_unique<Impl>(Thread::threadFactoryForTest(), stat_store, time_system,
+                                Filesystem::fileSystemForTest());
 }
 
 } // namespace Api

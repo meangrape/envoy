@@ -4,8 +4,9 @@
 #include <string>
 #include <vector>
 
-#include "envoy/config/filter/network/dubbo_proxy/v2alpha1/dubbo_proxy.pb.h"
-#include "envoy/config/filter/network/dubbo_proxy/v2alpha1/route.pb.h"
+#include "envoy/config/route/v3/route_components.pb.h"
+#include "envoy/extensions/filters/network/dubbo_proxy/v3/route.pb.h"
+#include "envoy/type/v3/range.pb.h"
 
 #include "common/common/logger.h"
 #include "common/common/matchers.h"
@@ -13,6 +14,7 @@
 #include "common/protobuf/protobuf.h"
 
 #include "extensions/filters/network/dubbo_proxy/metadata.h"
+#include "extensions/filters/network/dubbo_proxy/router/route.h"
 #include "extensions/filters/network/dubbo_proxy/router/router.h"
 
 #include "absl/types/optional.h"
@@ -28,8 +30,8 @@ class RouteEntryImplBase : public RouteEntry,
                            public std::enable_shared_from_this<RouteEntryImplBase>,
                            public Logger::Loggable<Logger::Id::dubbo> {
 public:
-  RouteEntryImplBase(const envoy::config::filter::network::dubbo_proxy::v2alpha1::Route& route);
-  virtual ~RouteEntryImplBase() = default;
+  RouteEntryImplBase(const envoy::extensions::filters::network::dubbo_proxy::v3::Route& route);
+  ~RouteEntryImplBase() override = default;
 
   // Router::RouteEntry
   const std::string& clusterName() const override;
@@ -50,7 +52,7 @@ protected:
 private:
   class WeightedClusterEntry : public RouteEntry, public Route {
   public:
-    using WeightedCluster = envoy::api::v2::route::WeightedCluster_ClusterWeight;
+    using WeightedCluster = envoy::config::route::v3::WeightedCluster::ClusterWeight;
     WeightedClusterEntry(const RouteEntryImplBase& parent, const WeightedCluster& cluster);
 
     uint64_t clusterWeight() const { return cluster_weight_; }
@@ -72,33 +74,32 @@ private:
     Envoy::Router::MetadataMatchCriteriaConstPtr metadata_match_criteria_;
   };
 
-  typedef std::shared_ptr<WeightedClusterEntry> WeightedClusterEntrySharedPtr;
+  using WeightedClusterEntrySharedPtr = std::shared_ptr<WeightedClusterEntry>;
 
   uint64_t total_cluster_weight_;
   const std::string cluster_name_;
-  std::vector<Http::HeaderUtility::HeaderData> config_headers_;
+  const std::vector<Http::HeaderUtility::HeaderDataPtr> config_headers_;
   std::vector<WeightedClusterEntrySharedPtr> weighted_clusters_;
 
   // TODO(gengleilei) Implement it.
   Envoy::Router::MetadataMatchCriteriaConstPtr metadata_match_criteria_;
 };
 
-typedef std::shared_ptr<const RouteEntryImplBase> RouteEntryImplBaseConstSharedPtr;
+using RouteEntryImplBaseConstSharedPtr = std::shared_ptr<const RouteEntryImplBase>;
 
 class ParameterRouteEntryImpl : public RouteEntryImplBase {
 public:
-  ParameterRouteEntryImpl(
-      const envoy::config::filter::network::dubbo_proxy::v2alpha1::Route& route);
+  ParameterRouteEntryImpl(const envoy::extensions::filters::network::dubbo_proxy::v3::Route& route);
   ~ParameterRouteEntryImpl() override;
 
   struct ParameterData {
     using ParameterMatchSpecifier =
-        envoy::config::filter::network::dubbo_proxy::v2alpha1::MethodMatch_ParameterMatchSpecifier;
+        envoy::extensions::filters::network::dubbo_proxy::v3::MethodMatch::ParameterMatchSpecifier;
     ParameterData(uint32_t index, const ParameterMatchSpecifier& config);
 
     Http::HeaderUtility::HeaderMatchType match_type_;
     std::string value_;
-    envoy::type::Int64Range range_;
+    envoy::type::v3::Int64Range range_;
     uint32_t index_;
   };
 
@@ -107,14 +108,14 @@ public:
                               uint64_t random_value) const override;
 
 private:
-  bool matchParameter(const std::string& request_data, const ParameterData& config_data) const;
+  bool matchParameter(absl::string_view request_data, const ParameterData& config_data) const;
 
   std::vector<ParameterData> parameter_data_list_;
 };
 
 class MethodRouteEntryImpl : public RouteEntryImplBase {
 public:
-  MethodRouteEntryImpl(const envoy::config::filter::network::dubbo_proxy::v2alpha1::Route& route);
+  MethodRouteEntryImpl(const envoy::extensions::filters::network::dubbo_proxy::v3::Route& route);
   ~MethodRouteEntryImpl() override;
 
   // RoutEntryImplBase
@@ -122,16 +123,16 @@ public:
                               uint64_t random_value) const override;
 
 private:
-  const Matchers::StringMatcher method_name_;
+  const Matchers::StringMatcherImpl method_name_;
   std::shared_ptr<ParameterRouteEntryImpl> parameter_route_;
 };
 
-class RouteMatcher : public Logger::Loggable<Logger::Id::dubbo> {
+class SingleRouteMatcherImpl : public RouteMatcher, public Logger::Loggable<Logger::Id::dubbo> {
 public:
-  using RouteConfig = envoy::config::filter::network::dubbo_proxy::v2alpha1::RouteConfiguration;
-  RouteMatcher(const RouteConfig& config);
+  using RouteConfig = envoy::extensions::filters::network::dubbo_proxy::v3::RouteConfiguration;
+  SingleRouteMatcherImpl(const RouteConfig& config, Server::Configuration::FactoryContext& context);
 
-  RouteConstSharedPtr route(const MessageMetadata& metadata, uint64_t random_value) const;
+  RouteConstSharedPtr route(const MessageMetadata& metadata, uint64_t random_value) const override;
 
 private:
   std::vector<RouteEntryImplBaseConstSharedPtr> routes_;
@@ -140,16 +141,14 @@ private:
   const absl::optional<std::string> version_;
 };
 
-typedef std::shared_ptr<const RouteMatcher> RouteMatcherConstSharedPtr;
-typedef std::unique_ptr<RouteMatcher> RouteMatcherPtr;
-
-class MultiRouteMatcher : public Logger::Loggable<Logger::Id::dubbo> {
+class MultiRouteMatcher : public RouteMatcher, public Logger::Loggable<Logger::Id::dubbo> {
 public:
   using RouteConfigList = Envoy::Protobuf::RepeatedPtrField<
-      ::envoy::config::filter::network::dubbo_proxy::v2alpha1::RouteConfiguration>;
-  MultiRouteMatcher(const RouteConfigList& route_config_list);
+      envoy::extensions::filters::network::dubbo_proxy::v3::RouteConfiguration>;
+  MultiRouteMatcher(const RouteConfigList& route_config_list,
+                    Server::Configuration::FactoryContext& context);
 
-  RouteConstSharedPtr route(const MessageMetadata& metadata, uint64_t random_value) const;
+  RouteConstSharedPtr route(const MessageMetadata& metadata, uint64_t random_value) const override;
 
 private:
   std::vector<RouteMatcherPtr> route_matcher_list_;

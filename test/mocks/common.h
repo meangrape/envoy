@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "envoy/common/scope_tracker.h"
 #include "envoy/common/time.h"
 #include "envoy/common/token_bucket.h"
 #include "envoy/event/timer.h"
@@ -36,14 +37,14 @@ public:
   ReadyWatcher();
   ~ReadyWatcher();
 
-  MOCK_METHOD0(ready, void());
+  MOCK_METHOD(void, ready, ());
 };
 
 // TODO(jmarantz): get rid of this and use SimulatedTimeSystem in its place.
 class MockTimeSystem : public Event::TestTimeSystem {
 public:
   MockTimeSystem();
-  ~MockTimeSystem();
+  ~MockTimeSystem() override;
 
   // TODO(#4160): Eliminate all uses of MockTimeSystem, replacing with SimulatedTimeSystem,
   // where timer callbacks are triggered by the advancement of time. This implementation
@@ -52,14 +53,17 @@ public:
   Event::SchedulerPtr createScheduler(Event::Scheduler& base_scheduler) override {
     return real_time_.createScheduler(base_scheduler);
   }
-  void sleep(const Duration& duration) override { real_time_.sleep(duration); }
+  void advanceTimeWait(const Duration& duration) override { real_time_.advanceTimeWait(duration); }
+  void advanceTimeAsync(const Duration& duration) override {
+    real_time_.advanceTimeAsync(duration);
+  }
   Thread::CondVar::WaitStatus
   waitFor(Thread::MutexBasicLockable& mutex, Thread::CondVar& condvar,
-          const Duration& duration) noexcept EXCLUSIVE_LOCKS_REQUIRED(mutex) override {
+          const Duration& duration) noexcept ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex) override {
     return real_time_.waitFor(mutex, condvar, duration); // NO_CHECK_FORMAT(real_time)
   }
-  MOCK_METHOD0(systemTime, SystemTime());
-  MOCK_METHOD0(monotonicTime, MonotonicTime());
+  MOCK_METHOD(SystemTime, systemTime, ());
+  MOCK_METHOD(MonotonicTime, monotonicTime, ());
 
   Event::TestRealTimeSystem real_time_; // NO_CHECK_FORMAT(real_time)
 };
@@ -85,5 +89,10 @@ inline bool operator==(const char* str, const StringViewSaver& saver) {
 inline bool operator==(const StringViewSaver& saver, const char* str) {
   return saver.value() == str;
 }
+
+class MockScopedTrackedObject : public ScopeTrackedObject {
+public:
+  MOCK_METHOD(void, dumpState, (std::ostream&, int), (const));
+};
 
 } // namespace Envoy

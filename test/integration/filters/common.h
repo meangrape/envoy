@@ -5,7 +5,7 @@
 #include "envoy/http/filter.h"
 #include "envoy/server/filter_config.h"
 
-#include "extensions/filters/http/common/empty_http_filter_config.h"
+#include "test/extensions/filters/http/common/empty_http_filter_config.h"
 
 namespace Envoy {
 
@@ -15,7 +15,8 @@ class SimpleFilterConfig : public Extensions::HttpFilters::Common::EmptyHttpFilt
 public:
   SimpleFilterConfig() : EmptyHttpFilterConfig(T::name) {}
 
-  Http::FilterFactoryCb createFilter(const std::string&, Server::Configuration::FactoryContext&) {
+  Http::FilterFactoryCb createFilter(const std::string&,
+                                     Server::Configuration::FactoryContext&) override {
     return [](Http::FilterChainFactoryCallbacks& callbacks) -> void {
       callbacks.addStreamFilter(std::make_shared<T>());
     };
